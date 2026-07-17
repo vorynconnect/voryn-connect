@@ -1,0 +1,83 @@
+{
+  "expo": {
+    "name": "Voryn Connect",
+    "slug": "voryn-connect",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "vorynconnect",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/brand/voryn-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F5F8FE"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.voryn.connect",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Voryn Connect uses your location to power rides, deliveries, and nearby services.",
+        "NSCameraUsageDescription": "Voryn Connect uses your camera to scan Voryn payment QR codes.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.voryn.connect",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "CAMERA"
+      ],
+      "predictiveBackGestureEnabled": false,
+      "config": {
+        "googleMaps": {
+          "apiKey": "REPLACE_WITH_ANDROID_GOOGLE_MAPS_API_KEY"
+        }
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Voryn Connect uses your location to power rides, deliveries, and nearby services."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#1F7CF6"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Voryn Connect uses your camera to scan Voryn payment QR codes.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Voryn Connect accesses your photos so you can set a profile picture."
+        }
+      ]
+    ],
+    "extra": {
+      "apiUrl": "https://api.voryn.app"
+    }
+  }
+}

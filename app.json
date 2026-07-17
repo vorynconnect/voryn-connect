@@ -1,0 +1,11 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "d30973f7-3b05-42c7-8487-6ba55cb19dae"
+      }
+    },
+    "owner": "voryns-team",
+    "slug": "vorynconnect"
+  }
+}

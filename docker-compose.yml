@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: voryn-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: voryn
+      POSTGRES_PASSWORD: voryn_dev_password
+      POSTGRES_DB: voryn_connect
+    ports:
+      - "5433:5432"
+    volumes:
+      - voryn_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voryn -d voryn_connect"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: voryn-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - voryn_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  voryn_pgdata:
+  voryn_redisdata:

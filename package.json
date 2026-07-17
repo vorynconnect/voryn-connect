@@ -1,0 +1,34 @@
+{
+  "name": "voryn-connect",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Voryn Connect — one app, every need. Customer mobile app and shared marketplace backend.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "api:dev": "npm run dev --workspace apps/api",
+    "api:build": "npm run build --workspace apps/api",
+    "api:test": "npm run test --workspace apps/api",
+    "api:migrate": "npm run prisma:migrate --workspace apps/api",
+    "api:seed": "npm run prisma:seed --workspace apps/api",
+    "mobile:start": "npm run start --workspace apps/mobile",
+    "mobile:test": "npm run test --workspace apps/mobile",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "allowScripts": {
+    "@prisma/client@5.22.0": true,
+    "@prisma/engines@5.22.0": true,
+    "argon2@0.41.1": true,
+    "esbuild@0.28.1": true,
+    "esbuild@0.21.5": true,
+    "prisma@5.22.0": true
+  }
+}

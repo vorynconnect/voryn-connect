@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "voryn-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "web", "--workspace", "apps/mobile"],
+      "port": 8081
+    },
+    {
+      "name": "voryn-web-alt",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd apps/mobile && npx expo start --web --port 19006"],
+      "port": 19006
+    },
+    {
+      "name": "voryn-mobile",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "mobile:start"],
+      "port": 8081
+    },
+    {
+      "name": "voryn-api",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "api:dev"],
+      "port": 4100
+    }
+  ]
+}

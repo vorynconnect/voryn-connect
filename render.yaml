@@ -1,0 +1,112 @@
+# Voryn Connect — Render Blueprint (Infrastructure as Code).
+#
+# One click brings up the whole backend, wired together:
+#   • voryn-api      — the Express/Prisma/Socket.IO API (built from the Dockerfile)
+#   • voryn-postgres — managed PostgreSQL (DATABASE_URL injected automatically)
+#   • voryn-keyvalue — managed Redis/Key Value (REDIS_URL injected automatically)
+#
+# How to use:
+#   1. Push this repo (the `voryn-connect/` folder) to GitHub.
+#   2. Render Dashboard → New → Blueprint → pick the repo. Render reads this file.
+#   3. Render prompts for every `sync: false` var below — paste your real values
+#      (Twilio, S3/R2, maps, your domains). JWT secrets are generated for you.
+#   4. Create. The API runs `prisma migrate deploy` on boot, then starts.
+#
+# The API refuses to boot if any production value is still a dev default
+# (see apps/api/src/config/env.ts) — that guard is your safety net.
+
+services:
+  - name: voryn-api
+    type: web
+    runtime: docker
+    plan: starter                 # ~US$7/mo, always-on (free tier sleeps — bad for an API)
+    region: ohio                  # closest Render region to Jamaica/Caribbean
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .              # build context = repo root (the Dockerfile copies from root)
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # ── Core ────────────────────────────────────────────────
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4100               # matches EXPOSE in the Dockerfile
+      # ── Wired automatically from the other services ─────────
+      - key: DATABASE_URL
+        fromDatabase:
+          name: voryn-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: voryn-keyvalue
+          type: keyvalue
+          property: connectionString
+      # ── Auth secrets (generated once, kept stable by Render) ─
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: ACCESS_TOKEN_TTL
+        value: 15m
+      - key: REFRESH_TOKEN_TTL_DAYS
+        value: 30
+      # ── OTP / SMS ───────────────────────────────────────────
+      - key: OTP_DEV_MODE
+        value: false
+      - key: OTP_TTL_MINUTES
+        value: 10
+      - key: SMS_PROVIDER
+        value: twilio
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_MESSAGING_SERVICE_SID   # or use TWILIO_FROM instead
+        sync: false
+      # ── Fulfillment ─────────────────────────────────────────
+      - key: SIMULATE_FULFILLMENT
+        value: false
+      # ── CORS — your real front-end domains, comma-separated ─
+      - key: CORS_ORIGINS
+        sync: false               # e.g. https://voryn.app,https://partner.voryn.app
+      # ── Media: object storage (S3/R2/B2/Spaces) ─────────────
+      - key: MEDIA_STORAGE
+        value: s3
+      - key: S3_ENDPOINT
+        sync: false               # blank for AWS; set for R2/B2/Spaces
+      - key: S3_REGION
+        sync: false               # 'auto' for R2, 'us-east-1' for AWS, etc.
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_FORCE_PATH_STYLE
+        value: false              # set true for MinIO / some providers
+      - key: MEDIA_PUBLIC_BASE_URL
+        sync: false               # public URL objects are served from
+      - key: MEDIA_MAX_SIZE_MB
+        value: 8
+      # ── Maps: keyed OSM-compatible provider (LocationIQ, etc.)
+      - key: MAPS_GEOCODER_URL
+        sync: false               # e.g. https://us1.locationiq.com/v1
+      - key: MAPS_ROUTER_URL
+        sync: false
+      - key: MAPS_GEOCODER_KEY
+        sync: false
+      - key: MAPS_ROUTER_KEY
+        sync: false
+      - key: DELIVERY_MAX_KM
+        value: 15
+
+  - name: voryn-keyvalue
+    type: keyvalue
+    plan: starter
+    region: ohio
+    ipAllowList: []               # empty = reachable only from your Render services (private)
+
+databases:
+  - name: voryn-postgres
+    plan: basic-256mb             # small launch plan; scale up as you grow
+    region: ohio

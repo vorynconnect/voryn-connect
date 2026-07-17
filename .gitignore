@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+build/
+.expo/
+web-build/
+
+# Env & secrets — never commit real secrets
+.env
+.env.*
+!.env.example
+
+# Prisma
+apps/api/prisma/*.db
+
+# Uploads (local object storage in dev)
+apps/api/uploads/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+
+# Test coverage
+coverage/
+
+# TypeScript
+*.tsbuildinfo
