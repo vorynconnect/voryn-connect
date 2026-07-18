@@ -18,6 +18,8 @@ import { rentalsRouter } from './modules/rentals/rentals.routes';
 import { favoritesRouter, notificationsRouter, reviewsRouter } from './modules/reviews/reviews.routes';
 import { partnerAuthRouter } from './modules/partner/partner-auth.routes';
 import { partnerRouter } from './modules/partner/partner.routes';
+import { adminAuthRouter } from './modules/admin/admin-auth.routes';
+import { adminRouter } from './modules/admin/admin.routes';
 import { driverRouter } from './modules/driver/driver.routes';
 import { chatRouter } from './modules/chat/chat.routes';
 import { mapsRouter } from './modules/maps/maps.routes';
@@ -58,6 +60,8 @@ export function createApp() {
   app.use('/v1/notifications', notificationsRouter);
   app.use('/v1/partner/auth', partnerAuthRouter);
   app.use('/v1/partner', partnerRouter);
+  app.use('/v1/admin/auth', adminAuthRouter);
+  app.use('/v1/admin', adminRouter);
   app.use('/v1/driver', driverRouter);
   app.use('/v1/chat', chatRouter);
   app.use('/v1/maps', mapsRouter);

@@ -76,6 +76,8 @@ Render will prompt for each `sync: false` value. Paste:
 | `S3_REGION` | `auto` for R2 |
 | `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | from R2 |
 | `MEDIA_PUBLIC_BASE_URL` | your bucket's public URL |
+| `BOOTSTRAP_ADMIN_EMAIL` | your team login email (e.g. `vorynconnect@gmail.com`) |
+| `BOOTSTRAP_ADMIN_PASSWORD` | a strong password (min 8 chars) — creates your team-console account on first boot |
 
 > Deferring R2: instead of the S3 rows, add `MEDIA_STORAGE=local` in the Render
 > env editor and leave the S3 rows blank.
@@ -121,9 +123,21 @@ exactly which env value it rejected.
 
 - [ ] `https://vorynconnect.com` loads
 - [ ] **Contact form** (contact.html) → submit → success toast (writes to the DB)
-- [ ] **Partner login** (partner-login.html) → log in with a seeded owner → dashboard loads
+- [ ] **Partner signup** (partner-login.html → "Sign up as a partner") → lands on
+      the **verification page** (partner-verification.html): fill business info,
+      upload a test document, submit
+- [ ] **Team console** (`/admin-login.html`) → sign in with your
+      `BOOTSTRAP_ADMIN_*` credentials → the test application appears under
+      "Needs review" → open it, view the documents, **Approve** or **Reject**
+- [ ] Partner side reflects the decision (approved → "Open your dashboard";
+      rejected → your notes shown, resubmit enabled)
 - [ ] Browser devtools → Network → the calls go to `https://api.vorynconnect.com` (not localhost)
-- [ ] `https://vorynconnect.com/admin-login.html` → redirects to the homepage (deprecated console stays hidden)
+
+> **How partner verification works:** every new partner signs up as
+> `PENDING_VERIFICATION` and is **invisible in the customer app** (discovery,
+> search, and checkout are all gated) until your team approves them in the
+> team console. Rejections send your notes back to the partner's verification
+> page so they can fix and resubmit.
 
 If the contact form or login fails with a CORS error, double-check step 3's
 `CORS_ORIGINS` exactly matches your live origins (https, no trailing slash).
@@ -134,6 +148,10 @@ If the contact form or login fails with a CORS error, double-check step 3's
 
 - **Security:** the LocationIQ key was shared in chat — rotate it in the
   LocationIQ dashboard before real launch and update it in Render.
+- **Verification documents** (IDs, registration certificates) are stored in the
+  same media bucket as logos/product photos, under unguessable random file
+  names. That's acceptable to launch, but plan to move them to a **private**
+  bucket with signed URLs as volume grows — they contain personal data.
 - **Map tiles** on the dashboard live map are still CARTO's free tier; swap for
   MapTiler before heavy use (LAUNCH.md §4). Geocoding/routing already use your key.
 - **Mobile app** (iOS/Android) is a separate track — see LAUNCH.md §5c. Set

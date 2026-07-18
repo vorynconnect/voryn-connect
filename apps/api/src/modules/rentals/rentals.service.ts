@@ -60,6 +60,10 @@ export const rentalsService = {
       include: { provider: true },
     });
     if (!vehicle || !vehicle.isActive) throw AppError.notFound('Vehicle not available');
+    // Discovery hides unverified providers; this backstops direct-ID reservations.
+    if (vehicle.provider.status !== 'ACTIVE') {
+      throw AppError.badRequest('This operator is not accepting reservations right now.', 'PROVIDER_UNAVAILABLE');
+    }
 
     const quote = this.quote({
       dailyRateMinor: vehicle.dailyRateMinor,

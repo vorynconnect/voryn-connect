@@ -38,6 +38,10 @@ export const bookingsService = {
       throw AppError.notFound('This service package is no longer available.');
     }
     const listing = pkg.listing;
+    // Discovery hides unverified providers; this backstops direct-ID bookings.
+    if (listing.provider.status !== 'ACTIVE') {
+      throw AppError.badRequest('This provider is not accepting bookings right now.', 'PROVIDER_UNAVAILABLE');
+    }
 
     if (input.locationType === 'MOBILE' && !listing.supportsMobile) {
       throw AppError.badRequest('This provider does not offer mobile service for this package.');

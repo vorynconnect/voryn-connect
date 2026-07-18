@@ -484,6 +484,15 @@ model Provider {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
+  // Verification application (filled in during partner onboarding, reviewed by the Voryn team)
+  legalName              String?
+  businessRegNo          String? // Companies Office of Jamaica registration number
+  trn                    String? // Tax Registration Number
+  ownerFullName          String?
+  ownerIdType            String? // national_id | passport | drivers_licence
+  ownerIdNumber          String?
+  applicationSubmittedAt DateTime?
+
   branches        ProviderBranch[]
   staff           ProviderStaff[]
   documents       ProviderDocument[]
@@ -541,8 +550,10 @@ model ProviderDocument {
   id         String   @id @default(cuid())
   providerId String
   provider   Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  type       String // business_registration | insurance | id | other
+  type       String // business_registration | owner_id | proof_of_address | permit_license | insurance | other
   fileUrl    String
+  fileName   String?
+  mimeType   String?
   status     VerificationStatus @default(PENDING)
   createdAt  DateTime @default(now())
 

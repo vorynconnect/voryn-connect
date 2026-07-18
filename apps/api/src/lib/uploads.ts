@@ -30,6 +30,12 @@ const ALLOWED_IMAGE_TYPES: Record<string, string> = {
   'image/webp': '.webp',
 };
 
+// Verification documents can also be PDFs (registration certificates, IDs).
+const ALLOWED_DOCUMENT_TYPES: Record<string, string> = {
+  ...ALLOWED_IMAGE_TYPES,
+  'application/pdf': '.pdf',
+};
+
 let s3Client: S3Client | null = null;
 function getS3(): S3Client {
   if (!s3Client) {
@@ -53,7 +59,7 @@ function getS3(): S3Client {
  * memory; busboy's fileSize limit still applies and truncated uploads are
  * rejected instead of stored.
  */
-function createS3Storage(prefix: (req: Request) => string): StorageEngine {
+function createS3Storage(prefix: (req: Request) => string, allowedTypes: Record<string, string>): StorageEngine {
   return {
     _handleFile(req, file, cb) {
       const chunks: Buffer[] = [];
@@ -69,7 +75,7 @@ function createS3Storage(prefix: (req: Request) => string): StorageEngine {
           return;
         }
         const body = Buffer.concat(chunks);
-        const ext = ALLOWED_IMAGE_TYPES[file.mimetype] ?? '.bin';
+        const ext = allowedTypes[file.mimetype] ?? '.bin';
         const key = `${prefix(req)}-${Date.now()}${ext}`;
         getS3()
           .send(
@@ -99,29 +105,42 @@ function createS3Storage(prefix: (req: Request) => string): StorageEngine {
   };
 }
 
-function createDiskStorage(prefix: (req: Request) => string): StorageEngine {
+function createDiskStorage(prefix: (req: Request) => string, allowedTypes: Record<string, string>): StorageEngine {
   return multer.diskStorage({
     destination: uploadDir,
     filename: (req, file, cb) => {
-      const ext = ALLOWED_IMAGE_TYPES[file.mimetype] ?? '.bin';
+      const ext = allowedTypes[file.mimetype] ?? '.bin';
       cb(null, `${prefix(req)}-${Date.now()}${ext}`);
+    },
+  });
+}
+
+function createUpload(
+  prefix: (req: Request) => string,
+  allowedTypes: Record<string, string>,
+  typeError: string,
+) {
+  return multer({
+    storage: isS3 ? createS3Storage(prefix, allowedTypes) : createDiskStorage(prefix, allowedTypes),
+    limits: { fileSize: env.MEDIA_MAX_SIZE_MB * 1024 * 1024, files: 1 },
+    fileFilter: (_req, file, cb) => {
+      if (!allowedTypes[file.mimetype]) {
+        cb(AppError.badRequest(typeError, 'INVALID_FILE_TYPE'));
+        return;
+      }
+      cb(null, true);
     },
   });
 }
 
 /** Multer instance that accepts a single validated image; object keys start with `prefix(req)`. */
 export function createImageUpload(prefix: (req: Request) => string) {
-  return multer({
-    storage: isS3 ? createS3Storage(prefix) : createDiskStorage(prefix),
-    limits: { fileSize: env.MEDIA_MAX_SIZE_MB * 1024 * 1024, files: 1 },
-    fileFilter: (_req, file, cb) => {
-      if (!ALLOWED_IMAGE_TYPES[file.mimetype]) {
-        cb(AppError.badRequest('Only JPEG, PNG, or WebP images are allowed.', 'INVALID_FILE_TYPE'));
-        return;
-      }
-      cb(null, true);
-    },
-  });
+  return createUpload(prefix, ALLOWED_IMAGE_TYPES, 'Only JPEG, PNG, or WebP images are allowed.');
+}
+
+/** Multer instance for verification documents — images plus PDFs. */
+export function createDocumentUpload(prefix: (req: Request) => string) {
+  return createUpload(prefix, ALLOWED_DOCUMENT_TYPES, 'Only PDF, JPEG, PNG, or WebP files are allowed.');
 }
 
 /**

@@ -101,6 +101,11 @@ services:
         sync: false
       - key: MAPS_ROUTER_KEY
         sync: false
+      # ── Team console bootstrap (creates the first ADMIN account on boot) ──
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false               # e.g. vorynconnect@gmail.com — login at /admin-login.html
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false               # min 8 chars; only used if the account doesn't exist yet
       # ── Marketplace tuning (defaults exist; pinned here for visibility) ──
       - key: DELIVERY_MAX_KM
         value: "15"

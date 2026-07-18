@@ -91,7 +91,13 @@ discoveryRouter.get('/search', validate({ query: searchQuery }), async (req, res
       }),
       q
         ? prisma.menuItem.findMany({
-            where: { isAvailable: true, name: nameFilter },
+            // Scope every sub-entity to ACTIVE (verified) providers so pending
+            // partners' catalogs never leak into the customer app.
+            where: {
+              isAvailable: true,
+              name: nameFilter,
+              category: { menu: { restaurant: { provider: { status: 'ACTIVE' } } } },
+            },
             take: limit,
             include: {
               category: {
@@ -102,7 +108,7 @@ discoveryRouter.get('/search', validate({ query: searchQuery }), async (req, res
         : Promise.resolve([]),
       q
         ? prisma.product.findMany({
-            where: { isActive: true, name: nameFilter },
+            where: { isActive: true, name: nameFilter, store: { provider: { status: 'ACTIVE' } } },
             take: limit,
             include: { store: { select: { id: true, name: true, providerId: true } } },
           })
@@ -111,6 +117,7 @@ discoveryRouter.get('/search', validate({ query: searchQuery }), async (req, res
         ? prisma.serviceListing.findMany({
             where: {
               isActive: true,
+              provider: { status: 'ACTIVE' },
               OR: [
                 { title: nameFilter! },
                 { category: { name: nameFilter! } },
@@ -129,6 +136,7 @@ discoveryRouter.get('/search', validate({ query: searchQuery }), async (req, res
         ? prisma.rentalVehicle.findMany({
             where: {
               isActive: true,
+              provider: { status: 'ACTIVE' },
               OR: [{ make: nameFilter! }, { model: nameFilter! }],
             },
             take: limit,
@@ -221,6 +229,7 @@ discoveryRouter.get(
       const listings = await prisma.serviceListing.findMany({
         where: {
           isActive: true,
+          provider: { status: 'ACTIVE' },
           ...(vertical ? { category: { vertical } } : {}),
           ...(categorySlug ? { category: { slug: categorySlug } } : {}),
           ...(q
@@ -269,6 +278,7 @@ discoveryRouter.get(
       const restaurants = await prisma.restaurant.findMany({
         where: {
           isActive: true,
+          provider: { status: 'ACTIVE' },
           ...(q
             ? {
                 OR: [
@@ -306,6 +316,7 @@ discoveryRouter.get(
       const vehicles = await prisma.rentalVehicle.findMany({
         where: {
           isActive: true,
+          provider: { status: 'ACTIVE' },
           ...(category ? { category: category as never } : {}),
           ...(q
             ? {

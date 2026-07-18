@@ -2,6 +2,7 @@ import http from 'node:http';
 import { Server as SocketIOServer } from 'socket.io';
 import { createApp } from './app';
 import { corsOrigins, env } from './config/env';
+import { ensureBootstrapAdmin } from './lib/bootstrap-admin';
 import { logger } from './lib/logger';
 import { registerIo } from './lib/realtime';
 import { verifyAccessToken } from './modules/auth/token.service';
@@ -47,4 +48,5 @@ io.on('connection', (socket) => {
 
 server.listen(env.PORT, () => {
   logger.info(`Voryn Connect API listening on http://localhost:${env.PORT}`);
+  ensureBootstrapAdmin().catch((err) => logger.error({ err }, '[bootstrap-admin] failed'));
 });

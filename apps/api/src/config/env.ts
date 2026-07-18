@@ -28,6 +28,10 @@ const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true'),
   CORS_ORIGINS: z.string().default('http://localhost:8081'),
+  // One-time team-console bootstrap: when both are set and no user exists with
+  // that email, an ADMIN account is created on boot (see lib/bootstrap-admin.ts).
+  BOOTSTRAP_ADMIN_EMAIL: z.string().optional().default(''),
+  BOOTSTRAP_ADMIN_PASSWORD: z.string().optional().default(''),
   MEDIA_STORAGE: z.enum(['local', 's3']).default('local'),
   MEDIA_UPLOAD_DIR: z.string().default('uploads'),
   MEDIA_MAX_SIZE_MB: z.coerce.number().positive().default(8),
