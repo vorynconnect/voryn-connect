@@ -6,6 +6,7 @@ import MapView, { Marker } from 'react-native-maps';
 import { useQuery } from '@tanstack/react-query';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { Card } from '@/components/Card';
+import { ConfirmDialog, type DialogSpec } from '@/components/ConfirmDialog';
 import { GradientButton } from '@/components/GradientButton';
 import { searchPlaces, type Place } from '@/features/map/geocode';
 import { useCurrentLocation } from '@/features/map/useCurrentLocation';
@@ -40,8 +41,26 @@ export default function RidesLandingScreen() {
   const [pickupOverride, setPickupOverride] = useState<{ label: string; point: LatLng; isReal: boolean } | null>(
     null,
   );
+  const [dialog, setDialog] = useState<DialogSpec | null>(null);
   const pickup = pickupOverride ?? currentLocation;
   const region = { ...pickup.point, ...REGION_DELTA };
+
+  // Locate buttons: drop any manual pin, get a FRESH high-accuracy fix, and
+  // jump the map to it. A null fix means permission is blocked — say so
+  // instead of silently sitting on the Portmore fallback.
+  const locateMe = async () => {
+    setPickupOverride(null);
+    const point = await currentLocation.refresh();
+    if (point) {
+      mapRef.current?.animateToRegion?.({ ...point, ...REGION_DELTA }, 400);
+    } else {
+      setDialog({
+        title: 'Location unavailable',
+        message:
+          'Voryn Connect can’t read your location. Allow location access for this app in your device or browser settings, then tap the locate button again. Until then we’re showing Portmore centre — you can also drop your pickup pin on the map.',
+      });
+    }
+  };
 
   // Results from the "choose on map" screen (pickup or destination token).
   const picked = useLocationPick((s) => s.picked);
@@ -171,8 +190,12 @@ export default function RidesLandingScreen() {
               <VorynPickupPin />
             </Marker>
           </MapView>
-          <Pressable style={styles.recenter} onPress={() => mapRef.current?.animateToRegion?.(region, 400)} hitSlop={8}>
-            <Ionicons name="locate" size={19} color={colors.navy} />
+          <Pressable style={styles.recenter} onPress={() => void locateMe()} hitSlop={8}>
+            {currentLocation.locating ? (
+              <ActivityIndicator size="small" color={colors.navy} />
+            ) : (
+              <Ionicons name="locate" size={19} color={colors.navy} />
+            )}
           </Pressable>
           <View style={styles.routeCard}>
             <View style={styles.routeRow}>
@@ -202,8 +225,12 @@ export default function RidesLandingScreen() {
                       {pickup.label}
                     </Text>
                   </Pressable>
-                  <Pressable onPress={() => setPickupOverride(null)} hitSlop={8}>
-                    <Ionicons name="locate-outline" size={20} color={colors.blue} />
+                  <Pressable onPress={() => void locateMe()} hitSlop={8}>
+                    {currentLocation.locating ? (
+                      <ActivityIndicator size="small" color={colors.blue} />
+                    ) : (
+                      <Ionicons name="locate-outline" size={20} color={colors.blue} />
+                    )}
                   </Pressable>
                 </View>
                 <View style={styles.routeDivider} />
@@ -358,6 +385,7 @@ export default function RidesLandingScreen() {
           onPress={() => void submitDestination()}
         />
       </ScrollView>
+      <ConfirmDialog spec={dialog} onClose={() => setDialog(null)} />
     </View>
   );
 }
