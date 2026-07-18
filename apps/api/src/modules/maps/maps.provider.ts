@@ -126,8 +126,10 @@ class OsmMapProvider implements MapProvider {
     const viewbox = bias
       ? `${bias.longitude - 0.25},${bias.latitude + 0.15},${bias.longitude + 0.25},${bias.latitude - 0.15}`
       : METRO_VIEWBOX;
+    // format=json (not jsonv2): LocationIQ silently falls back to XML on
+    // formats it doesn't know, and plain json parses identically everywhere.
     const url =
-      `${this.geocoderBase}/search?format=jsonv2&limit=6&countrycodes=jm&addressdetails=0` +
+      `${this.geocoderBase}/search?format=json&limit=6&countrycodes=jm&addressdetails=0` +
       `&viewbox=${viewbox}&q=${encodeURIComponent(q)}`;
     const data = await fetchJson<NominatimResult[]>(this.withKey(url, this.geocoderKey));
     if (!data) return [];
@@ -146,7 +148,7 @@ class OsmMapProvider implements MapProvider {
   }
 
   async reverseGeocode(latitude: number, longitude: number): Promise<AddressResult | null> {
-    const url = `${this.geocoderBase}/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}&zoom=17&addressdetails=1`;
+    const url = `${this.geocoderBase}/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=17&addressdetails=1`;
     const data = await fetchJson<NominatimResult>(this.withKey(url, this.geocoderKey));
     if (!data || !data.display_name) return null;
     const a = data.address ?? {};
@@ -167,8 +169,11 @@ class OsmMapProvider implements MapProvider {
   }
 
   async calculateRoute(from: Coordinates, to: Coordinates): Promise<RouteResult | null> {
+    // OSRM serves routes at /route/v1/driving; LocationIQ's OSRM-compatible
+    // directions API lives at /directions/driving on the same base URL.
+    const routePath = this.routerBase.includes('locationiq') ? 'directions/driving' : 'route/v1/driving';
     const url =
-      `${this.routerBase}/route/v1/driving/` +
+      `${this.routerBase}/${routePath}/` +
       `${from.longitude},${from.latitude};${to.longitude},${to.latitude}` +
       `?overview=full&geometries=geojson`;
     const data = await fetchJson<{
