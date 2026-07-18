@@ -3,14 +3,16 @@
 # One click brings up the whole backend, wired together:
 #   • voryn-api      — the Express/Prisma/Socket.IO API (built from the Dockerfile)
 #   • voryn-postgres — managed PostgreSQL (DATABASE_URL injected automatically)
-#   • voryn-keyvalue — managed Redis/Key Value (REDIS_URL injected automatically)
+#   • voryn-keyvalue — managed Key Value store, Redis-compatible with the app's
+#                      ioredis client (REDIS_URL injected automatically)
 #
 # How to use:
-#   1. Push this repo (the `voryn-connect/` folder) to GitHub.
+#   1. Push this repo (the `voryn-connect/` folder as the repo ROOT) to GitHub.
 #   2. Render Dashboard → New → Blueprint → pick the repo. Render reads this file.
 #   3. Render prompts for every `sync: false` var below — paste your real values
 #      (Twilio, S3/R2, maps, your domains). JWT secrets are generated for you.
-#   4. Create. The API runs `prisma migrate deploy` on boot, then starts.
+#   4. Apply. The API container runs `prisma migrate deploy` on boot (see the
+#      Dockerfile CMD), then starts `node dist/src/server.js`.
 #
 # The API refuses to boot if any production value is still a dev default
 # (see apps/api/src/config/env.ts) — that guard is your safety net.
@@ -19,10 +21,10 @@ services:
   - name: voryn-api
     type: web
     runtime: docker
-    plan: starter                 # ~US$7/mo, always-on (free tier sleeps — bad for an API)
-    region: ohio                  # closest Render region to Jamaica/Caribbean
+    plan: starter                 # always-on; the free tier sleeps, which breaks an API
+    region: virginia              # US East — closest Render region to Jamaica
     dockerfilePath: ./apps/api/Dockerfile
-    dockerContext: .              # build context = repo root (the Dockerfile copies from root)
+    dockerContext: .              # build context = repo root (Dockerfile copies root package-lock.json)
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -30,7 +32,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 4100               # matches EXPOSE in the Dockerfile
+        value: "4100"             # matches EXPOSE 4100 in the Dockerfile
       # ── Wired automatically from the other services ─────────
       - key: DATABASE_URL
         fromDatabase:
@@ -49,31 +51,33 @@ services:
       - key: ACCESS_TOKEN_TTL
         value: 15m
       - key: REFRESH_TOKEN_TTL_DAYS
-        value: 30
+        value: "30"
       # ── OTP / SMS ───────────────────────────────────────────
       - key: OTP_DEV_MODE
-        value: false
+        value: "false"
       - key: OTP_TTL_MINUTES
-        value: 10
+        value: "10"
       - key: SMS_PROVIDER
         value: twilio
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN
         sync: false
-      - key: TWILIO_MESSAGING_SERVICE_SID   # or use TWILIO_FROM instead
-        sync: false
+      - key: TWILIO_MESSAGING_SERVICE_SID
+        sync: false               # recommended; leave blank if using TWILIO_FROM
+      - key: TWILIO_FROM
+        sync: false               # your Twilio number; leave blank if using a Messaging Service
       # ── Fulfillment ─────────────────────────────────────────
       - key: SIMULATE_FULFILLMENT
-        value: false
+        value: "false"
       # ── CORS — your real front-end domains, comma-separated ─
       - key: CORS_ORIGINS
-        sync: false               # e.g. https://voryn.app,https://partner.voryn.app
+        sync: false               # e.g. https://vorynconnect.com,https://partner.vorynconnect.com
       # ── Media: object storage (S3/R2/B2/Spaces) ─────────────
       - key: MEDIA_STORAGE
         value: s3
       - key: S3_ENDPOINT
-        sync: false               # blank for AWS; set for R2/B2/Spaces
+        sync: false               # blank for AWS; endpoint URL for R2/B2/Spaces
       - key: S3_REGION
         sync: false               # 'auto' for R2, 'us-east-1' for AWS, etc.
       - key: S3_BUCKET
@@ -83,30 +87,32 @@ services:
       - key: S3_SECRET_ACCESS_KEY
         sync: false
       - key: S3_FORCE_PATH_STYLE
-        value: false              # set true for MinIO / some providers
+        value: "false"            # set "true" for MinIO / some providers
       - key: MEDIA_PUBLIC_BASE_URL
-        sync: false               # public URL objects are served from
+        sync: false               # public URL your bucket objects are served from
       - key: MEDIA_MAX_SIZE_MB
-        value: 8
-      # ── Maps: keyed OSM-compatible provider (LocationIQ, etc.)
+        value: "8"
+      # ── Maps: keyed OSM-compatible provider (LocationIQ, Geoapify) ──
       - key: MAPS_GEOCODER_URL
         sync: false               # e.g. https://us1.locationiq.com/v1
       - key: MAPS_ROUTER_URL
-        sync: false
+        sync: false               # e.g. https://us1.locationiq.com/v1
       - key: MAPS_GEOCODER_KEY
         sync: false
       - key: MAPS_ROUTER_KEY
         sync: false
+      # ── Marketplace tuning (defaults exist; pinned here for visibility) ──
       - key: DELIVERY_MAX_KM
-        value: 15
+        value: "15"
 
   - name: voryn-keyvalue
     type: keyvalue
     plan: starter
-    region: ohio
-    ipAllowList: []               # empty = reachable only from your Render services (private)
+    region: virginia
+    maxmemoryPolicy: noeviction   # rate-limit + coordination keys must never be evicted
+    ipAllowList: []               # empty = private; reachable only from your Render services
 
 databases:
   - name: voryn-postgres
     plan: basic-256mb             # small launch plan; scale up as you grow
-    region: ohio
+    region: virginia

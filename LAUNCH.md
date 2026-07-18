@@ -173,8 +173,16 @@ generated for you; everything else is prompted so you paste real values once.
 
 > Verified locally: the Dockerfile builds, and the container boots end-to-end
 > (migrations apply, server serves `/health` and a real DB-backed login).
-> `region: ohio` is the closest Render region to Jamaica — change it in
-> `render.yaml` if you prefer another.
+> `region: virginia` (US East) is the closest Render region to Jamaica —
+> change it in `render.yaml` if you prefer another. All three resources
+> (API, Postgres, Key Value) must stay in the SAME region so the internal
+> `DATABASE_URL`/`REDIS_URL` connections work.
+
+> **If the Blueprint fails with an "EOF" or empty-file error**, the
+> `render.yaml` in your GitHub repo is empty or missing — usually from an
+> incomplete upload. Confirm on github.com that `render.yaml` at the repo
+> root shows this file's contents, and that the repo root is the
+> `voryn-connect/` folder itself (not a parent folder containing it).
 
 **Railway alternative:** create a project, add PostgreSQL and Redis plugins,
 add a service from this repo pointing at `apps/api/Dockerfile`, then set the
