@@ -22,27 +22,58 @@ const partnerAuthLimiter = rateLimit('partner-auth', 20, 60);
 const PARTNER_TOKEN_TTL = '12h';
 
 const SERVICE_TYPE_TO_CATEGORY: Record<string, ProviderCategory> = {
-  'Liquor & Beverages': ProviderCategory.DRINKS,
+  // Food & stores
   'Restaurant / Food Delivery': ProviderCategory.RESTAURANT,
+  'Bakery & Pastries': ProviderCategory.RESTAURANT,
   Grocery: ProviderCategory.GROCERY,
   'Grocery Delivery': ProviderCategory.GROCERY,
   Pharmacy: ProviderCategory.PHARMACY,
   'Pharmacy Delivery': ProviderCategory.PHARMACY,
+  'Liquor & Beverages': ProviderCategory.DRINKS,
   'Convenience Store': ProviderCategory.CONVENIENCE,
+  // Rides & vehicles
   'Ride / Mobility': ProviderCategory.RIDES,
   'Vehicle Rental': ProviderCategory.VEHICLE_RENTAL,
+  // Auto care
   'Car Wash': ProviderCategory.AUTO_CARE,
+  'Car Wash & Detailing': ProviderCategory.AUTO_CARE,
   'Car Repair': ProviderCategory.AUTO_CARE,
+  'Car Repair & Servicing': ProviderCategory.AUTO_CARE,
+  'Tyre & Battery Service': ProviderCategory.AUTO_CARE,
+  'Roadside Assistance': ProviderCategory.AUTO_CARE,
+  // Technicians
   'Phone & Computer Repair': ProviderCategory.TECHNICIAN,
   'Appliance Repair': ProviderCategory.TECHNICIAN,
+  'A/C Repair & Installation': ProviderCategory.TECHNICIAN,
+  'Electronics & TV Repair': ProviderCategory.TECHNICIAN,
+  // Home services
   'Home Services': ProviderCategory.HOME_SERVICES,
   Plumber: ProviderCategory.HOME_SERVICES,
   Electrician: ProviderCategory.HOME_SERVICES,
   Cleaning: ProviderCategory.HOME_SERVICES,
+  Painter: ProviderCategory.HOME_SERVICES,
+  'Carpenter & Furniture': ProviderCategory.HOME_SERVICES,
+  'Landscaping & Gardening': ProviderCategory.HOME_SERVICES,
+  'Pest Control': ProviderCategory.HOME_SERVICES,
   // B2B wholesale suppliers: sell to Voryn partners, hidden from customers.
   Supplier: ProviderCategory.SUPPLIER,
   'Product Supplier': ProviderCategory.SUPPLIER,
+  'Farm & Produce Supplier': ProviderCategory.SUPPLIER,
 };
+
+/**
+ * Custom "Other" service types are typed free-text by the applicant. Supplier
+ * language routes them into the partner-only wholesale side; everything else
+ * starts as a generic store, and the verification review sorts out the rest.
+ */
+function categoryForServiceType(serviceType: string): ProviderCategory {
+  const exact = SERVICE_TYPE_TO_CATEGORY[serviceType];
+  if (exact) return exact;
+  if (/supplier|wholesale|farm|agricult|distribut|producer/i.test(serviceType)) {
+    return ProviderCategory.SUPPLIER;
+  }
+  return ProviderCategory.CONVENIENCE;
+}
 
 function slugify(name: string): string {
   return name
@@ -121,7 +152,7 @@ partnerAuthRouter.post(
       const existing = await prisma.user.findFirst({ where: { email } });
       if (existing) throw AppError.conflict('An account with this email already exists.', 'EMAIL_TAKEN');
 
-      const category = SERVICE_TYPE_TO_CATEGORY[serviceType] ?? ProviderCategory.CONVENIENCE;
+      const category = categoryForServiceType(serviceType);
       const baseSlug = slugify(businessName) || 'partner';
       const slugCount = await prisma.provider.count({ where: { slug: { startsWith: baseSlug } } });
       const slug = slugCount === 0 ? baseSlug : `${baseSlug}-${slugCount + 1}`;
