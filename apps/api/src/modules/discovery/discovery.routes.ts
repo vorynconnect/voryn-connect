@@ -20,7 +20,8 @@ discoveryRouter.get('/home', async (req, res, next) => {
         take: 4,
       }),
       prisma.provider.findMany({
-        where: { status: 'ACTIVE' },
+        // ACTIVE only, and never B2B suppliers (they serve partners, not customers).
+        where: { status: 'ACTIVE', NOT: { categories: { has: 'SUPPLIER' } } },
         orderBy: [{ ratingAvg: 'desc' }, { ratingCount: 'desc' }],
         take: 8,
         select: {
@@ -72,6 +73,7 @@ discoveryRouter.get('/search', validate({ query: searchQuery }), async (req, res
       prisma.provider.findMany({
         where: {
           status: 'ACTIVE',
+          NOT: { categories: { has: 'SUPPLIER' } },
           ...(category ? { categories: { has: category } } : {}),
           ...(nameFilter ? { name: nameFilter } : {}),
         },
@@ -96,7 +98,7 @@ discoveryRouter.get('/search', validate({ query: searchQuery }), async (req, res
             where: {
               isAvailable: true,
               name: nameFilter,
-              category: { menu: { restaurant: { provider: { status: 'ACTIVE' } } } },
+              category: { menu: { restaurant: { provider: { status: 'ACTIVE', NOT: { categories: { has: 'SUPPLIER' } } } } } },
             },
             take: limit,
             include: {
@@ -108,7 +110,7 @@ discoveryRouter.get('/search', validate({ query: searchQuery }), async (req, res
         : Promise.resolve([]),
       q
         ? prisma.product.findMany({
-            where: { isActive: true, name: nameFilter, store: { provider: { status: 'ACTIVE' } } },
+            where: { isActive: true, name: nameFilter, store: { provider: { status: 'ACTIVE', NOT: { categories: { has: 'SUPPLIER' } } } } },
             take: limit,
             include: { store: { select: { id: true, name: true, providerId: true } } },
           })
@@ -117,7 +119,7 @@ discoveryRouter.get('/search', validate({ query: searchQuery }), async (req, res
         ? prisma.serviceListing.findMany({
             where: {
               isActive: true,
-              provider: { status: 'ACTIVE' },
+              provider: { status: 'ACTIVE', NOT: { categories: { has: 'SUPPLIER' } } },
               OR: [
                 { title: nameFilter! },
                 { category: { name: nameFilter! } },
@@ -136,7 +138,7 @@ discoveryRouter.get('/search', validate({ query: searchQuery }), async (req, res
         ? prisma.rentalVehicle.findMany({
             where: {
               isActive: true,
-              provider: { status: 'ACTIVE' },
+              provider: { status: 'ACTIVE', NOT: { categories: { has: 'SUPPLIER' } } },
               OR: [{ make: nameFilter! }, { model: nameFilter! }],
             },
             take: limit,
@@ -164,6 +166,7 @@ discoveryRouter.get(
       const providers = await prisma.provider.findMany({
         where: {
           status: 'ACTIVE',
+          NOT: { categories: { has: 'SUPPLIER' } },
           ...(category ? { categories: { has: category } } : {}),
           ...(q ? { name: { contains: q, mode: 'insensitive' } } : {}),
         },
@@ -183,7 +186,9 @@ discoveryRouter.get(
 discoveryRouter.get('/providers/:id', async (req, res, next) => {
   try {
     const provider = await getProviderDetailForApp(req.params.id!);
-    if (!provider || provider.status !== 'ACTIVE') throw AppError.notFound('Provider not found');
+    if (!provider || provider.status !== 'ACTIVE' || provider.categories.includes('SUPPLIER')) {
+      throw AppError.notFound('Provider not found');
+    }
     res.json({ provider });
   } catch (err) {
     next(err);
@@ -229,7 +234,7 @@ discoveryRouter.get(
       const listings = await prisma.serviceListing.findMany({
         where: {
           isActive: true,
-          provider: { status: 'ACTIVE' },
+          provider: { status: 'ACTIVE', NOT: { categories: { has: 'SUPPLIER' } } },
           ...(vertical ? { category: { vertical } } : {}),
           ...(categorySlug ? { category: { slug: categorySlug } } : {}),
           ...(q
@@ -278,7 +283,7 @@ discoveryRouter.get(
       const restaurants = await prisma.restaurant.findMany({
         where: {
           isActive: true,
-          provider: { status: 'ACTIVE' },
+          provider: { status: 'ACTIVE', NOT: { categories: { has: 'SUPPLIER' } } },
           ...(q
             ? {
                 OR: [
@@ -316,7 +321,7 @@ discoveryRouter.get(
       const vehicles = await prisma.rentalVehicle.findMany({
         where: {
           isActive: true,
-          provider: { status: 'ACTIVE' },
+          provider: { status: 'ACTIVE', NOT: { categories: { has: 'SUPPLIER' } } },
           ...(category ? { category: category as never } : {}),
           ...(q
             ? {

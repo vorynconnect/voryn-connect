@@ -87,12 +87,13 @@ export const ordersService = {
     const { cart, address, providerId, merchantName, deliveryFeeMinor, distanceKm } = quote;
     if (!address) throw AppError.notFound('Delivery address not found');
     if (quote.outOfZone) throw AppError.badRequest(OUT_OF_ZONE_MESSAGE, 'OUT_OF_DELIVERY_ZONE');
-    // Discovery hides unverified providers; this backstops direct-ID checkouts.
+    // Discovery hides unverified providers and B2B suppliers; this backstops
+    // direct-ID checkouts.
     const providerRow = await prisma.provider.findUnique({
       where: { id: providerId },
-      select: { status: true },
+      select: { status: true, categories: true },
     });
-    if (providerRow?.status !== 'ACTIVE') {
+    if (providerRow?.status !== 'ACTIVE' || providerRow.categories.includes('SUPPLIER')) {
       throw AppError.badRequest('This merchant is not accepting orders right now.', 'PROVIDER_UNAVAILABLE');
     }
     const { subtotalMinor, taxMinor } = quote;

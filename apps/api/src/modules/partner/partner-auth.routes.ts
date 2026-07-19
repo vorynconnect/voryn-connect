@@ -28,14 +28,20 @@ const SERVICE_TYPE_TO_CATEGORY: Record<string, ProviderCategory> = {
   'Grocery Delivery': ProviderCategory.GROCERY,
   Pharmacy: ProviderCategory.PHARMACY,
   'Pharmacy Delivery': ProviderCategory.PHARMACY,
-  'Product Supplier': ProviderCategory.CONVENIENCE,
+  'Convenience Store': ProviderCategory.CONVENIENCE,
   'Ride / Mobility': ProviderCategory.RIDES,
   'Vehicle Rental': ProviderCategory.VEHICLE_RENTAL,
   'Car Wash': ProviderCategory.AUTO_CARE,
   'Car Repair': ProviderCategory.AUTO_CARE,
+  'Phone & Computer Repair': ProviderCategory.TECHNICIAN,
+  'Appliance Repair': ProviderCategory.TECHNICIAN,
   'Home Services': ProviderCategory.HOME_SERVICES,
   Plumber: ProviderCategory.HOME_SERVICES,
   Electrician: ProviderCategory.HOME_SERVICES,
+  Cleaning: ProviderCategory.HOME_SERVICES,
+  // B2B wholesale suppliers: sell to Voryn partners, hidden from customers.
+  Supplier: ProviderCategory.SUPPLIER,
+  'Product Supplier': ProviderCategory.SUPPLIER,
 };
 
 function slugify(name: string): string {

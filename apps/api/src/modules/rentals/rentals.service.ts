@@ -61,7 +61,7 @@ export const rentalsService = {
     });
     if (!vehicle || !vehicle.isActive) throw AppError.notFound('Vehicle not available');
     // Discovery hides unverified providers; this backstops direct-ID reservations.
-    if (vehicle.provider.status !== 'ACTIVE') {
+    if (vehicle.provider.status !== 'ACTIVE' || vehicle.provider.categories.includes('SUPPLIER')) {
       throw AppError.badRequest('This operator is not accepting reservations right now.', 'PROVIDER_UNAVAILABLE');
     }
 

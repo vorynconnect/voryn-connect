@@ -23,8 +23,9 @@ const SERVICE_TYPE_BY_CATEGORY: Record<string, string> = {
   RIDES: 'Ride / Mobility',
   VEHICLE_RENTAL: 'Vehicle Rental',
   AUTO_CARE: 'Car Repair',
-  TECHNICIAN: 'Home Services',
+  TECHNICIAN: 'Phone & Computer Repair',
   HOME_SERVICES: 'Home Services',
+  SUPPLIER: 'Supplier',
 };
 
 export function serviceTypeFor(provider: Provider): string {

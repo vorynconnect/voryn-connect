@@ -10,6 +10,7 @@ import { ordersService } from '../orders/orders.service';
 import { bookingsService } from '../bookings/bookings.service';
 import { requirePartner, sendData } from './partner.middleware';
 import { verificationRouter } from './verification.routes';
+import { supplyRouter } from './supply.routes';
 import {
   BOOKING_TRANSITION_LABELS,
   ORDER_TRANSITION_LABELS,
@@ -27,6 +28,7 @@ import { getProviderDetailForApp } from '../discovery/discovery.service';
 export const partnerRouter = Router();
 partnerRouter.use(requirePartner);
 partnerRouter.use('/verification', verificationRouter);
+partnerRouter.use('/', supplyRouter);
 
 const ORDER_INCLUDE = {
   items: true,
@@ -40,7 +42,9 @@ const BOOKING_INCLUDE = {
   appointment: true,
 } satisfies Prisma.ServiceBookingInclude;
 
-const STORE_CATEGORIES = ['GROCERY', 'PHARMACY', 'CONVENIENCE', 'DRINKS'] as const;
+// SUPPLIER uses the same Product catalog as stores; their catalog is the
+// wholesale supply list partners restock from (never customer-visible).
+const STORE_CATEGORIES = ['GROCERY', 'PHARMACY', 'CONVENIENCE', 'DRINKS', 'SUPPLIER'] as const;
 const SERVICE_VERTICALS = { AUTO_CARE: 'AUTO_CARE', TECHNICIAN: 'TECHNICIAN', HOME_SERVICES: 'HOME_SERVICES' } as const;
 
 type CatalogKind = 'menu' | 'store' | 'service' | 'rental' | 'none';

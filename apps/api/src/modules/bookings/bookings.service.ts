@@ -39,7 +39,7 @@ export const bookingsService = {
     }
     const listing = pkg.listing;
     // Discovery hides unverified providers; this backstops direct-ID bookings.
-    if (listing.provider.status !== 'ACTIVE') {
+    if (listing.provider.status !== 'ACTIVE' || listing.provider.categories.includes('SUPPLIER')) {
       throw AppError.badRequest('This provider is not accepting bookings right now.', 'PROVIDER_UNAVAILABLE');
     }
 

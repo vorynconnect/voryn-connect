@@ -66,6 +66,7 @@ enum ProviderCategory {
   AUTO_CARE
   TECHNICIAN
   HOME_SERVICES
+  SUPPLIER // B2B wholesale: visible to partners for restocking, never to customers
 }
 
 enum ProviderStatus {
@@ -510,6 +511,8 @@ model Provider {
   rentalReservations RentalReservation[]
   promotions      Promotion[]
   conversations   Conversation[]   @relation("ConversationProvider")
+  supplyOrdersAsSupplier SupplyOrder[] @relation("SupplyOrdersAsSupplier")
+  supplyOrdersAsBuyer    SupplyOrder[] @relation("SupplyOrdersAsBuyer")
 }
 
 model ProviderBranch {
@@ -571,6 +574,47 @@ model ProviderVerification {
   createdAt  DateTime           @default(now())
 
   @@index([providerId])
+}
+
+// ── B2B supply orders: partners restock from verified SUPPLIER providers ──
+
+enum SupplyOrderStatus {
+  PLACED
+  CONFIRMED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+model SupplyOrder {
+  id         String            @id @default(cuid())
+  code       String            @unique
+  supplierId String
+  supplier   Provider          @relation("SupplyOrdersAsSupplier", fields: [supplierId], references: [id])
+  buyerId    String
+  buyer      Provider          @relation("SupplyOrdersAsBuyer", fields: [buyerId], references: [id])
+  status     SupplyOrderStatus @default(PLACED)
+  note       String?
+  // Settled between the businesses on delivery (B2B invoice); no wallet movement.
+  subtotalMinor Int
+  totalMinor    Int
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  items SupplyOrderItem[]
+
+  @@index([supplierId, status])
+  @@index([buyerId, status])
+}
+
+model SupplyOrderItem {
+  id             String      @id @default(cuid())
+  orderId        String
+  order          SupplyOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId      String?
+  name           String // snapshot at order time
+  unitPriceMinor Int
+  quantity       Int
 }
 
 model ProviderOperatingHours {
