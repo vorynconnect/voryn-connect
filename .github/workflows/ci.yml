@@ -1,0 +1,98 @@
+# Voryn Connect CI — runs on every push and pull request.
+#
+# Three jobs, mirroring the local verification workflow:
+#   • api    — typecheck + the full vitest suite against real Postgres 16 +
+#              Redis 7 service containers (same images as docker-compose).
+#              The suite self-creates its data; no seed is required (proven
+#              against a fresh database).
+#   • mobile — TypeScript strict typecheck of the Expo app.
+#   • docker — builds the production API image, catching packaging bugs
+#              (wrong start path, missing Prisma artifacts) that only appear
+#              in the compiled image.
+#
+# CI-only secrets below are deliberately fake: the API's production boot guard
+# (src/config/env.ts) rejects them outside NODE_ENV=test/development.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API — typecheck & tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: voryn
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: voryn_connect
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U voryn"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://voryn:ci_only_password@localhost:5432/voryn_connect?schema=public
+      REDIS_URL: redis://localhost:6379
+      JWT_ACCESS_SECRET: ci-only-access-secret-never-production
+      JWT_REFRESH_SECRET: ci-only-refresh-secret-never-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Generate Prisma client
+        run: npm run prisma:generate --workspace apps/api
+      - name: Apply migrations
+        run: npm run prisma:deploy --workspace apps/api
+      - name: Typecheck
+        run: npx tsc --noEmit -p apps/api
+      - name: Tests
+        run: npm test --workspace apps/api
+
+  mobile:
+    name: Mobile — typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit -p apps/mobile
+
+  docker:
+    name: API — production image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f apps/api/Dockerfile -t voryn-api-ci .

@@ -1,9 +1,12 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import pinoHttp from 'pino-http';
 import { corsOrigins, env } from './config/env';
 import { logger } from './lib/logger';
+import { prisma } from './lib/prisma';
+import { redis } from './lib/redis';
 import { apiLimiter } from './middleware/rate-limit';
 import { errorHandler, notFoundHandler } from './middleware/error-handler';
 import { authRouter } from './modules/auth/auth.routes';
@@ -38,13 +41,50 @@ export function createApp() {
   );
   app.use(express.json({ limit: '1mb' }));
   if (env.NODE_ENV !== 'test') {
-    app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health' } }));
+    app.use(
+      pinoHttp({
+        logger,
+        // Every request gets a correlation id (honouring an inbound
+        // X-Request-Id from the load balancer). It is echoed on the response
+        // and included in error payloads so users can quote it to support.
+        genReqId: (req, res) => {
+          const inbound = req.headers['x-request-id'];
+          const id = typeof inbound === 'string' && inbound.length > 0 && inbound.length <= 64
+            ? inbound
+            : crypto.randomUUID();
+          res.setHeader('X-Request-Id', id);
+          return id;
+        },
+        autoLogging: { ignore: (req) => (req.url ?? '').startsWith('/health') },
+      }),
+    );
   }
-  app.use(apiLimiter);
 
-  app.get('/health', (_req, res) => {
+  // Health endpoints sit BEFORE the rate limiter: load-balancer probes must
+  // never be throttled away.
+  //  - /health, /health/live — process liveness (no dependencies touched).
+  //  - /health/ready — dependency readiness; 503 tells the load balancer to
+  //    stop routing traffic to this instance until it recovers.
+  app.get(['/health', '/health/live'], (_req, res) => {
     res.json({ status: 'ok', service: 'voryn-connect-api' });
   });
+
+  app.get('/health/ready', async (_req, res) => {
+    const withTimeout = <T>(p: Promise<T>, ms: number) =>
+      Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
+    const checks: Record<string, 'ok' | 'fail'> = { database: 'fail', redis: 'fail' };
+    try {
+      await withTimeout(prisma.$queryRaw`SELECT 1`, 2000);
+      checks.database = 'ok';
+    } catch { /* stays 'fail' */ }
+    try {
+      if ((await withTimeout(redis.ping(), 2000)) === 'PONG') checks.redis = 'ok';
+    } catch { /* stays 'fail' */ }
+    const ready = checks.database === 'ok' && checks.redis === 'ok';
+    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks });
+  });
+
+  app.use(apiLimiter);
 
   app.use('/v1/auth', authRouter);
   app.use('/v1/users', usersRouter);

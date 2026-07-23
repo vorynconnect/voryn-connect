@@ -50,6 +50,11 @@ Security & correctness hardening already in the code:
   Maps key field, build numbers, version 1.0.0, production API URL fallback in
   `config.ts`). Verified with a native prebuild and `expo-doctor` (18/18 pass).
   Also fixed a stray invalid `typescript@6.0.3` install (re-pinned to 5.9.3).
+- **CI** (`.github/workflows/ci.yml`): on every push/PR — API typecheck + the
+  full test suite against real Postgres 16 + Redis 7 service containers,
+  mobile typecheck, and a production Docker image build. The recipe was proven
+  locally against a fresh unseeded database (86/86) and the lockfile verified
+  `npm ci`-clean. Activates automatically once the repo is pushed to GitHub.
 - **Branding**: the Voryn logo asset was trimmed to its artwork bounds and
   enlarged so it sits flush in every header (app, driver mode, website navbar,
   partner dashboard sidebar, footer). Dead "Continue with Google/Apple" buttons
@@ -238,6 +243,49 @@ Notes:
   audio (`recordAudioAndroid: false` is set). This is a standard, accepted
   camera-library permission — no action needed unless a reviewer asks, in which
   case the honest answer is "camera SDK dependency; audio recording is unused."
+
+## 5d. Scale & reliability posture (verified)
+
+The backend runs as a stateless **modular monolith on 2 always-on instances**
+(`render.yaml numInstances: 2`) behind Render's load balancer. What makes that
+safe, each piece verified locally:
+
+- **Realtime across instances** — Socket.IO uses a Redis adapter
+  (`server.ts`), so an event emitted by one instance reaches clients connected
+  to any other. Proven end-to-end: a driver GPS ping into instance A was
+  received by a customer socket connected to instance B.
+- **Readiness routing** — `/health/ready` checks Postgres + Redis (2s
+  timeouts) and returns 503 while degraded, pulling the instance out of
+  rotation; `/health/live` reports process liveness. Verified: an instance
+  with Redis down serves 503-ready/200-live, **stays alive**, and recovers.
+- **Graceful shutdown** — SIGTERM drains in-flight requests, closes sockets,
+  releases DB/Redis connections, exits 0 (10s force-exit cap). Deploys and
+  scale-downs don't cut off active checkouts.
+- **Connection budgeting** — Prisma pool capped per instance
+  (`DB_CONNECTION_LIMIT=10`, `pool_timeout=15s`); instances × limit stays
+  under the Postgres plan's connection budget.
+- **Crash isolation** — Redis outages log-and-degrade instead of killing the
+  process (adapter clients use `maxRetriesPerRequest: null` + error handlers;
+  a process-level `unhandledRejection` guard logs stray rejections).
+- **Traceability** — every request gets an `X-Request-Id` (honouring the load
+  balancer's), echoed inside every error payload, so a user-reported error
+  maps to its exact log line.
+- **Measured baseline** (local hardware, real DB queries): `/health/ready`
+  14,260 req/s at P99 10ms under 100 connections; `/v1/discovery/home` P95
+  6ms; a single-IP flood of 94k requests was shed by the rate limiter (299
+  served, rest 429) without the API degrading.
+
+Already in the codebase from earlier work: strict backend state machines,
+idempotency keys on every financial/ordering mutation, double-entry wallet
+ledger with serializable transactions, atomic one-winner driver claims,
+per-endpoint rate limits, GPS anomaly rejection, and TTL caches on map calls.
+
+**Deliberately deferred** (revisit as traffic grows, per the phased plan):
+background job queues (BullMQ) — current request paths are fast and the only
+slow external call, OTP SMS, must block signup anyway; Redis GEO for driver
+search (Haversine over indexed presence columns is fine at Portmore launch
+density); read replicas; microservice extraction. The modular-monolith layout
+means each of these is an additive change, not a redesign.
 
 ## 6. First-run data
 

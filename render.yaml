@@ -25,7 +25,12 @@ services:
     region: virginia              # US East — closest Render region to Jamaica
     dockerfilePath: ./apps/api/Dockerfile
     dockerContext: .              # build context = repo root (Dockerfile copies root package-lock.json)
-    healthCheckPath: /health
+    # Readiness probe: checks Postgres + Redis, returns 503 while degraded so
+    # the load balancer stops routing to an unhealthy instance.
+    healthCheckPath: /health/ready
+    # Two always-on instances: one can crash or redeploy while the other keeps
+    # serving. Realtime events reach both via the Socket.IO Redis adapter.
+    numInstances: 2
     autoDeploy: true
     envVars:
       # ── Core ────────────────────────────────────────────────
@@ -109,6 +114,10 @@ services:
       # ── Marketplace tuning (defaults exist; pinned here for visibility) ──
       - key: DELIVERY_MAX_KM
         value: "15"
+      # Per-instance DB pool cap: instances × limit must stay under the
+      # Postgres plan's connection budget (basic-256mb allows ~100).
+      - key: DB_CONNECTION_LIMIT
+        value: "10"
 
   - name: voryn-keyvalue
     type: keyvalue
