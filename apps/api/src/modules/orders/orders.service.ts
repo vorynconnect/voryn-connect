@@ -8,13 +8,15 @@ import { recordTrackingEvent } from '../tracking/tracking.service';
 import { notifyProviderStaff } from '../../lib/notify';
 import { walletService } from '../wallet/wallet.service';
 import { settlementService } from '../settlement/settlement.service';
-import { POINT_VALUE_MINOR } from '../../lib/loyalty';
+import { normaliseRequestedPoints, pointsToMinor } from '../../lib/loyalty';
 import {
+  issuePendingPoints,
   quoteRedemption,
   restorePoints,
   reverseEarnedPoints,
   rewardsFund,
   spendPoints,
+  voidPendingPoints,
 } from '../rewards/rewards.service';
 import { OUT_OF_ZONE_MESSAGE, deliveryQuote } from './delivery-quote';
 
@@ -32,7 +34,7 @@ export const ordersService = {
    * Prices the active cart for a delivery address. Checkout runs the same
    * math, so what the customer sees here is exactly what they are charged.
    */
-  async quote(customerId: string, addressId?: string) {
+  async quote(customerId: string, addressId?: string, paymentMethod?: PaymentMethodType) {
     const cart = await prisma.cart.findFirst({
       where: { customerId, isActive: true },
       include: { items: true, promoCode: true },
@@ -85,6 +87,10 @@ export const ordersService = {
       itemsMinor: Math.max(0, subtotalMinor - discountMinor),
       deliveryFeeMinor: trip.deliveryFeeMinor,
       provider,
+      // Card orders cost more to accept, which leaves less margin for a
+      // discount. Unpriced quotes assume the wallet (the cheapest path).
+      paymentMethod,
+      customerPaidMinor: totalBeforeTipMinor,
     });
 
     return {
@@ -112,7 +118,7 @@ export const ordersService = {
     redeemPoints?: boolean;
     idempotencyKey: string;
   }) {
-    const quote = await this.quote(input.customerId, input.addressId);
+    const quote = await this.quote(input.customerId, input.addressId, input.paymentMethodType);
     const { cart, address, providerId, merchantName, deliveryFeeMinor, distanceKm } = quote;
     if (!address) throw AppError.notFound('Delivery address not found');
     if (quote.outOfZone) throw AppError.badRequest(OUT_OF_ZONE_MESSAGE, 'OUT_OF_DELIVERY_ZONE');
@@ -133,11 +139,9 @@ export const ordersService = {
     // asked for. Funded by Voryn, so the merchant's earnings are unaffected.
     const discountMinor = quote.discountMinor;
     const requestedPoints = input.pointsToRedeem ?? (input.redeemPoints ? Number.MAX_SAFE_INTEGER : 0);
-    let pointsRedeemed = 0;
-    if (requestedPoints > 0) {
-      pointsRedeemed = Math.min(requestedPoints, quote.points.maxPoints);
-    }
-    const pointsDiscountMinor = pointsRedeemed * POINT_VALUE_MINOR;
+    // Clamped to the engine's cap and rounded down to a whole redemption step.
+    const pointsRedeemed = normaliseRequestedPoints(requestedPoints, quote.points);
+    const pointsDiscountMinor = pointsToMinor(pointsRedeemed);
 
     const tipMinor = input.tipMinor ?? 0;
     const totalMinor = Math.max(
@@ -265,8 +269,26 @@ export const ordersService = {
         : []),
     ]);
 
-    // Points are earned at delivery (settlement), not at checkout, so a
-    // cancelled order never needs an earn reversal.
+    // Points are issued now but held PENDING; they only become spendable when
+    // the order completes, so a cancelled order never leaves points behind.
+    const eligibleForPointsMinor = Math.max(0, subtotalMinor - discountMinor - pointsDiscountMinor);
+    if (eligibleForPointsMinor > 0) {
+      const priorOrders = await prisma.order.count({
+        where: {
+          customerId: input.customerId,
+          status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] },
+        },
+      });
+      await issuePendingPoints({
+        userId: input.customerId,
+        eligibleMinor: eligibleForPointsMinor,
+        category: providerRow.categories[0] ?? 'RESTAURANT',
+        referenceType: 'order',
+        referenceId: placed.id,
+        code: placed.code,
+        isFirstOrder: priorOrders === 0,
+      });
+    }
 
     await recordTrackingEvent({
       subjectType: 'ORDER',
@@ -413,6 +435,10 @@ export const ordersService = {
         idempotencyKey: `fund-redeem-reversal:order:${order.id}`,
       });
     }
+    // Points not yet released simply vanish; points already released have to be
+    // clawed back, which may leave the account in deficit rather than blocking
+    // the customer's cash refund.
+    await voidPendingPoints({ userId: order.customerId, referenceType: 'order', referenceId: order.id });
     if (order.pointsEarned > 0) {
       await reverseEarnedPoints({
         userId: order.customerId,

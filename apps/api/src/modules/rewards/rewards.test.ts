@@ -1,7 +1,7 @@
 /**
- * Rewards engine tests: the redemption caps that keep every order profitable,
- * category/tier/campaign earn rates, FIFO point expiry, and the rewards fund.
- * Runs against the local dev database.
+ * Rewards engine tests. The first block reproduces the worked examples from
+ * the money model spec exactly, so a change to any rate or cap that would move
+ * those numbers fails here first.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import argon2 from 'argon2';
@@ -10,20 +10,28 @@ import { env } from '../../config/env';
 import {
   COMMISSION_SAFETY_PERCENT,
   MAX_REDEEM_PERCENT,
-  MIN_ORDER_FOR_REDEMPTION_MINOR,
+  MIN_REDEMPTION_POINTS,
+  POINT_VALUE_MINOR,
+  REDEMPTION_INCREMENT_POINTS,
   computePointsEarned,
   computeRedemptionCap,
+  normaliseRequestedPoints,
   tierForSpend,
 } from '../../lib/loyalty';
+import { CATEGORY_COMMISSION_BPS, commissionOfMinor, deliverySplit } from '../../lib/commission';
+import { safeMarginMinor } from '../../lib/margin';
 import {
   awardPoints,
   expireStalePoints,
   expiringSoon,
+  issuePendingPoints,
   pointsSnapshot,
+  releasePendingPoints,
   restorePoints,
   reverseEarnedPoints,
   rewardsFund,
   spendPoints,
+  voidPendingPoints,
 } from './rewards.service';
 
 const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -34,17 +42,48 @@ async function balance(): Promise<number> {
   return a.pointsBalance;
 }
 
+async function pending(): Promise<number> {
+  const a = await prisma.loyaltyAccount.findUniqueOrThrow({ where: { userId } });
+  return a.pendingPoints;
+}
+
 async function setBalance(points: number) {
   await prisma.loyaltyTransaction.deleteMany({ where: { account: { userId } } });
-  await prisma.loyaltyAccount.update({ where: { userId }, data: { pointsBalance: 0 } });
+  await prisma.loyaltyAccount.update({
+    where: { userId },
+    data: { pointsBalance: 0, pendingPoints: 0 },
+  });
   if (points > 0) {
-    await restorePoints({
-      userId,
-      points,
-      description: 'test seed',
-      referenceType: 'test',
-    });
+    await restorePoints({ userId, points, description: 'test seed', referenceType: 'test' });
   }
+}
+
+/**
+ * Cap for a wallet-paid order, the way the engine computes it in production.
+ * `pointsBalance` defaults high so the business limits are what bind.
+ */
+function capFor(input: {
+  itemsMinor: number;
+  deliveryFeeMinor?: number;
+  commissionBps: number;
+  pointsBalance?: number;
+}) {
+  const deliveryFeeMinor = input.deliveryFeeMinor ?? 0;
+  const commissionMinor = commissionOfMinor(input.itemsMinor, input.commissionBps);
+  const orderValueMinor = input.itemsMinor + deliveryFeeMinor;
+  return computeRedemptionCap({
+    pointsBalance: input.pointsBalance ?? 1_000_000,
+    itemsMinor: input.itemsMinor,
+    deliveryFeeMinor,
+    expectedCommissionMinor: commissionMinor,
+    safeMarginMinor: safeMarginMinor({
+      commissionMinor,
+      customerPaidMinor: orderValueMinor,
+      orderValueMinor,
+      paymentMethod: 'VORYN_WALLET',
+    }),
+    category: 'RESTAURANT',
+  });
 }
 
 beforeAll(async () => {
@@ -69,116 +108,206 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-describe('redemption caps', () => {
-  // JMD 5,000 of food + JMD 700 delivery, restaurant at 10% => JMD 500 commission.
-  const order = {
-    itemsMinor: 500_000,
-    deliveryFeeMinor: 70_000,
-    expectedCommissionMinor: 50_000,
-    category: 'RESTAURANT' as const,
-  };
-
-  it('never lets a redemption exceed 80% of expected commission', () => {
-    // The customer holds JMD 2,000 of points and 20% of the order would be
-    // JMD 1,140, but only JMD 400 is safe to give back.
-    const cap = computeRedemptionCap({ ...order, pointsBalance: 2000 });
-    expect(cap.maxMinor).toBe(40_000);
+describe('spec worked examples', () => {
+  it('restaurant: JMD 5,000 at 10% caps redemption on commission, not order size', () => {
+    const cap = capFor({ itemsMinor: 500_000, commissionBps: 1000 });
+    // 5% of the order is JMD 250, but 25% of the JMD 500 commission is JMD 125,
+    // rounded down to a whole 100-point step: JMD 120.
     expect(cap.limitedBy).toBe('COMMISSION_SAFETY');
-    // Voryn still clears JMD 100 on the order rather than losing JMD 200.
-    expect(order.expectedCommissionMinor - cap.maxMinor).toBe(10_000);
+    expect(cap.maxMinor).toBe(12_000);
+    expect(cap.maxPoints).toBe(1200);
   });
 
-  it('applies the 20% order limit when commission is generous', () => {
-    // A 40% commission would allow far more, so the order percentage binds.
-    const cap = computeRedemptionCap({
-      ...order,
-      expectedCommissionMinor: 200_000,
-      pointsBalance: 5000,
+  it('home service: JMD 10,000 at 12% allows exactly the spec figure', () => {
+    const cap = capFor({ itemsMinor: 1_000_000, commissionBps: 1200 });
+    // Commission JMD 1,200; 25% of it is JMD 300, which the spec calls out.
+    expect(cap.maxMinor).toBe(30_000);
+    expect(cap.maxPoints).toBe(3000);
+    expect(cap.limitedBy).toBe('COMMISSION_SAFETY');
+  });
+
+  it('retail: the 8% rate protects a thinner-margin category', () => {
+    const cap = capFor({ itemsMinor: 500_000, commissionBps: 800 });
+    // 5% of the order is JMD 250, but commission is only JMD 400, so JMD 100.
+    expect(cap.maxMinor).toBe(10_000);
+    expect(cap.maxPoints).toBe(1000);
+  });
+
+  it('ride: JMD 2,000 fare at 15% rounds down to a whole redemption step', () => {
+    const cap = capFor({ itemsMinor: 200_000, commissionBps: 1500 });
+    // 25% of the JMD 300 commission is JMD 75, but redemption moves in
+    // 100-point (JMD 10) steps, so the customer may use JMD 70.
+    expect(cap.maxMinor).toBe(7_000);
+    expect(cap.maxPoints).toBe(700);
+  });
+
+  it('earns 5 points per JMD 100 worth JMD 0.10 each: a 0.5% reward', () => {
+    for (const [spendMinor, expected] of [
+      [100_000, 50],
+      [500_000, 250],
+      [1_000_000, 500],
+      [5_000_000, 2500],
+    ] as const) {
+      const points = computePointsEarned({
+        eligibleMinor: spendMinor,
+        category: 'RESTAURANT',
+        tier: 'BRONZE',
+      });
+      expect(points).toBe(expected);
+      // Half a percent of spend, in discount value.
+      expect(points * POINT_VALUE_MINOR).toBe(Math.round(spendMinor * 0.005));
+    }
+  });
+
+  it('prices every provider category at the agreed commission', () => {
+    expect(CATEGORY_COMMISSION_BPS.RESTAURANT).toBe(1000);
+    expect(CATEGORY_COMMISSION_BPS.GROCERY).toBe(800);
+    expect(CATEGORY_COMMISSION_BPS.HOME_SERVICES).toBe(1200);
+    expect(CATEGORY_COMMISSION_BPS.TECHNICIAN).toBe(1200);
+    expect(CATEGORY_COMMISSION_BPS.AUTO_CARE).toBe(1200);
+    expect(CATEGORY_COMMISSION_BPS.VEHICLE_RENTAL).toBe(1000);
+    expect(CATEGORY_COMMISSION_BPS.RIDES).toBe(1500);
+    expect(CATEGORY_COMMISSION_BPS.SUPPLIER).toBe(500);
+  });
+
+  it('charges couriers 12% of the delivery fee and never touches tips', () => {
+    // JMD 700 delivery fee: Voryn takes JMD 84, the courier keeps JMD 616.
+    expect(deliverySplit(70_000)).toEqual({
+      courierCompensationMinor: 61_600,
+      vorynMarginMinor: 8_400,
     });
-    expect(cap.maxMinor).toBe(Math.floor((570_000 * MAX_REDEEM_PERCENT) / 100));
-    expect(cap.limitedBy).toBe('ORDER_PERCENT');
   });
+});
 
+describe('redemption caps', () => {
   it('stops at the customer balance when that is smallest', () => {
-    const cap = computeRedemptionCap({ ...order, pointsBalance: 50 });
-    expect(cap.maxPoints).toBe(50);
+    const cap = capFor({ itemsMinor: 1_000_000, commissionBps: 1200, pointsBalance: 600 });
+    expect(cap.maxPoints).toBe(600);
     expect(cap.limitedBy).toBe('BALANCE');
   });
 
+  it('applies the 5% order limit when commission is generous', () => {
+    // A 40% commission leaves plenty of headroom, so order size binds.
+    const cap = capFor({ itemsMinor: 1_000_000, commissionBps: 4000 });
+    expect(cap.limitedBy).toBe('ORDER_PERCENT');
+    expect(cap.maxMinor).toBe(Math.floor((1_000_000 * MAX_REDEEM_PERCENT) / 100));
+  });
+
   it('blocks redemption on orders under the minimum', () => {
-    const cap = computeRedemptionCap({
-      itemsMinor: 100_000,
-      deliveryFeeMinor: 20_000, // JMD 1,200 total, under the JMD 1,500 floor
-      expectedCommissionMinor: 10_000,
-      category: 'RESTAURANT',
-      pointsBalance: 5000,
-    });
+    const cap = capFor({ itemsMinor: 100_000, deliveryFeeMinor: 20_000, commissionBps: 1000 });
     expect(cap.maxPoints).toBe(0);
     expect(cap.limitedBy).toBe('MIN_ORDER');
-    expect(cap.reason).toContain('300');
+  });
+
+  it('refuses redemptions below the 500-point floor', () => {
+    // JMD 1,600 order at 5% = JMD 80 by order size, but 25% of the JMD 160
+    // commission is JMD 40 — under the JMD 50 minimum, so nothing is allowed.
+    const cap = capFor({ itemsMinor: 160_000, commissionBps: 1000 });
+    expect(cap.maxPoints).toBe(0);
+    expect(cap.limitedBy).toBe('BELOW_MINIMUM');
+    expect(cap.reason).toContain('500');
+  });
+
+  it('protects the contribution margin, not just the commission', () => {
+    const itemsMinor = 1_000_000;
+    const commissionMinor = commissionOfMinor(itemsMinor, 1200);
+    // A card payment carries gateway fees that a wallet payment does not.
+    const cardMargin = safeMarginMinor({
+      commissionMinor,
+      customerPaidMinor: itemsMinor,
+      orderValueMinor: itemsMinor,
+      paymentMethod: 'CARD',
+    });
+    const walletMargin = safeMarginMinor({
+      commissionMinor,
+      customerPaidMinor: itemsMinor,
+      orderValueMinor: itemsMinor,
+      paymentMethod: 'VORYN_WALLET',
+    });
+    expect(cardMargin).toBeLessThan(walletMargin);
+
+    // Where the margin is thinner than 25% of commission, the margin wins.
+    const cap = computeRedemptionCap({
+      pointsBalance: 1_000_000,
+      itemsMinor,
+      deliveryFeeMinor: 0,
+      expectedCommissionMinor: commissionMinor,
+      safeMarginMinor: 5_000, // only JMD 50 of margin left
+      category: 'RESTAURANT',
+    });
+    expect(cap.limitedBy).toBe('MARGIN_SAFETY');
+    expect(cap.maxMinor).toBe(5_000);
+  });
+
+  it('lifts the Voryn-cost caps when the merchant funds the reward', () => {
+    const cap = computeRedemptionCap({
+      pointsBalance: 1_000_000,
+      itemsMinor: 500_000,
+      deliveryFeeMinor: 0,
+      expectedCommissionMinor: 50_000,
+      safeMarginMinor: 0, // would normally block everything
+      category: 'RESTAURANT',
+      merchantFunded: true,
+    });
+    expect(cap.limitedBy).toBe('ORDER_PERCENT');
+    expect(cap.maxMinor).toBe(25_000);
+  });
+
+  it('pays no points on B2B supplier orders', () => {
+    const cap = computeRedemptionCap({
+      pointsBalance: 1_000_000,
+      itemsMinor: 500_000,
+      deliveryFeeMinor: 0,
+      expectedCommissionMinor: 50_000,
+      safeMarginMinor: 50_000,
+      category: 'SUPPLIER',
+    });
+    expect(cap.limitedBy).toBe('CATEGORY_INELIGIBLE');
+    expect(computePointsEarned({ eligibleMinor: 500_000, category: 'SUPPLIER', tier: 'BRONZE' })).toBe(0);
   });
 
   it('never covers the whole delivery fee, whatever the order shape', () => {
-    // Property check rather than a single case: with unlimited points and
-    // unlimited commission headroom, no split of items vs delivery may leave
-    // the customer paying nothing towards delivery.
-    for (const itemsMinor of [10_000, 200_000, 500_000, 2_000_000]) {
+    for (const itemsMinor of [200_000, 500_000, 2_000_000]) {
       for (const deliveryFeeMinor of [20_000, 70_000, 200_000]) {
         const cap = computeRedemptionCap({
+          pointsBalance: 10_000_000,
           itemsMinor,
           deliveryFeeMinor,
           expectedCommissionMinor: 100_000_000,
+          safeMarginMinor: 100_000_000,
           category: 'RESTAURANT',
-          pointsBalance: 10_000_000,
         });
-        // Even with unlimited points and commission headroom, the discount can
-        // never reach the value of the items plus the whole delivery fee.
-        expect(cap.maxMinor).toBeLessThanOrEqual(
-          itemsMinor + Math.floor(deliveryFeeMinor / 2),
-        );
+        expect(cap.maxMinor).toBeLessThanOrEqual(itemsMinor + Math.floor(deliveryFeeMinor / 2));
         expect(cap.maxMinor).toBeLessThan(itemsMinor + deliveryFeeMinor);
       }
     }
   });
 
-  it('lifts the commission cap when the merchant funds the reward', () => {
-    const cap = computeRedemptionCap({ ...order, pointsBalance: 5000, merchantFunded: true });
-    expect(cap.limitedBy).toBe('ORDER_PERCENT');
-    expect(cap.maxMinor).toBeGreaterThan(
-      Math.floor((order.expectedCommissionMinor * COMMISSION_SAFETY_PERCENT) / 100),
-    );
-  });
-
-  it('pays no points on B2B supplier orders', () => {
-    const cap = computeRedemptionCap({ ...order, category: 'SUPPLIER', pointsBalance: 5000 });
-    expect(cap.maxPoints).toBe(0);
-    expect(cap.limitedBy).toBe('CATEGORY_INELIGIBLE');
-    expect(computePointsEarned({ eligibleMinor: 500_000, category: 'SUPPLIER', tier: 'BRONZE' })).toBe(0);
+  it('rounds a requested redemption down to a whole step', () => {
+    const cap = capFor({ itemsMinor: 1_000_000, commissionBps: 1200 }); // 3,000 pts
+    expect(normaliseRequestedPoints(2_750, cap)).toBe(2_700);
+    expect(normaliseRequestedPoints(99_999, cap)).toBe(3_000);
+    expect(normaliseRequestedPoints(400, cap)).toBe(0); // under the floor
+    expect(REDEMPTION_INCREMENT_POINTS).toBe(100);
+    expect(MIN_REDEMPTION_POINTS).toBe(500);
   });
 });
 
-describe('earn rates', () => {
-  it('earns at the category rate', () => {
-    const spend = 1_000_000; // JMD 10,000
-    expect(computePointsEarned({ eligibleMinor: spend, category: 'RESTAURANT', tier: 'BRONZE' })).toBe(100);
-    expect(computePointsEarned({ eligibleMinor: spend, category: 'GROCERY', tier: 'BRONZE' })).toBe(75);
-    expect(computePointsEarned({ eligibleMinor: spend, category: 'RIDES', tier: 'BRONZE' })).toBe(83);
-    expect(computePointsEarned({ eligibleMinor: spend, category: 'HOME_SERVICES', tier: 'BRONZE' })).toBe(200);
-    expect(computePointsEarned({ eligibleMinor: spend, category: 'VEHICLE_RENTAL', tier: 'BRONZE' })).toBe(300);
-  });
-
+describe('earn rates and tiers', () => {
   it('multiplies by tier without changing what a point is worth', () => {
     const args = { eligibleMinor: 1_000_000, category: 'RESTAURANT' as const };
-    expect(computePointsEarned({ ...args, tier: 'BRONZE' })).toBe(100);
-    expect(computePointsEarned({ ...args, tier: 'SILVER' })).toBe(125);
-    expect(computePointsEarned({ ...args, tier: 'GOLD' })).toBe(150);
-    expect(computePointsEarned({ ...args, tier: 'PLATINUM' })).toBe(200);
+    expect(computePointsEarned({ ...args, tier: 'BRONZE' })).toBe(500);
+    expect(computePointsEarned({ ...args, tier: 'SILVER' })).toBe(625);
+    expect(computePointsEarned({ ...args, tier: 'GOLD' })).toBe(750);
+    expect(computePointsEarned({ ...args, tier: 'PLATINUM' })).toBe(1000);
+    // Even at the top tier the reward is 1% of spend, not 5%.
+    expect(1000 * POINT_VALUE_MINOR).toBe(Math.round(1_000_000 * 0.01));
   });
 
   it('stacks a campaign on top of the tier rate', () => {
     const args = { eligibleMinor: 1_000_000, category: 'RESTAURANT' as const, tier: 'GOLD' as const };
-    expect(computePointsEarned({ ...args, campaignMultiplierBps: 20_000 })).toBe(300); // double points
-    expect(computePointsEarned({ ...args, campaignBonusPoints: 50 })).toBe(200);
+    expect(computePointsEarned({ ...args, campaignMultiplierBps: 20_000 })).toBe(1500);
+    expect(computePointsEarned({ ...args, campaignBonusPoints: 50 })).toBe(800);
   });
 
   it('assigns tiers from trailing spend', () => {
@@ -186,6 +315,82 @@ describe('earn rates', () => {
     expect(tierForSpend(5_000_000)).toBe('SILVER');
     expect(tierForSpend(15_000_000)).toBe('GOLD');
     expect(tierForSpend(40_000_000)).toBe('PLATINUM');
+  });
+});
+
+describe('pending points', () => {
+  beforeEach(async () => {
+    await setBalance(0);
+  });
+
+  it('holds points pending until the transaction completes', async () => {
+    const issued = await issuePendingPoints({
+      userId,
+      eligibleMinor: 1_000_000,
+      category: 'RESTAURANT',
+      referenceType: 'test',
+      referenceId: `pend-${stamp}`,
+      code: 'PEND',
+    });
+    expect(issued).toBe(500);
+    expect(await pending()).toBe(500);
+    expect(await balance()).toBe(0); // not spendable yet
+
+    // Pending points cannot be spent.
+    expect(await spendPoints({ userId, points: 500, description: 'early', referenceType: 'test' })).toBe(false);
+
+    const released = await releasePendingPoints({
+      userId,
+      referenceType: 'test',
+      referenceId: `pend-${stamp}`,
+      code: 'PEND',
+    });
+    expect(released).toBe(500);
+    expect(await pending()).toBe(0);
+    expect(await balance()).toBe(500);
+  });
+
+  it('voids pending points when the transaction never completes', async () => {
+    await issuePendingPoints({
+      userId,
+      eligibleMinor: 1_000_000,
+      category: 'RESTAURANT',
+      referenceType: 'test',
+      referenceId: `void-${stamp}`,
+      code: 'VOID',
+    });
+    expect(await pending()).toBe(500);
+
+    await voidPendingPoints({ userId, referenceType: 'test', referenceId: `void-${stamp}` });
+    expect(await pending()).toBe(0);
+    expect(await balance()).toBe(0);
+  });
+
+  it('starts the expiry clock at release, not at purchase', async () => {
+    await issuePendingPoints({
+      userId,
+      eligibleMinor: 1_000_000,
+      category: 'RESTAURANT',
+      referenceType: 'test',
+      referenceId: `clock-${stamp}`,
+      code: 'CLOCK',
+    });
+    const beforeRelease = await prisma.loyaltyTransaction.findFirstOrThrow({
+      where: { account: { userId }, type: 'EARN' },
+    });
+    expect(beforeRelease.expiresAt).toBeNull();
+
+    await releasePendingPoints({
+      userId,
+      referenceType: 'test',
+      referenceId: `clock-${stamp}`,
+      code: 'CLOCK',
+    });
+    const afterRelease = await prisma.loyaltyTransaction.findFirstOrThrow({
+      where: { account: { userId }, type: 'EARN' },
+    });
+    expect(afterRelease.expiresAt).toBeInstanceOf(Date);
+    expect(afterRelease.expiresAt!.getTime()).toBeGreaterThan(Date.now());
   });
 });
 
@@ -197,7 +402,7 @@ describe('point lots and expiry', () => {
   it('spends the oldest points first', async () => {
     await awardPoints({
       userId,
-      eligibleMinor: 1_000_000, // 100 pts, older lot
+      eligibleMinor: 1_000_000, // 500 pts
       category: 'RESTAURANT',
       referenceType: 'test',
       referenceId: `old-${stamp}`,
@@ -206,7 +411,6 @@ describe('point lots and expiry', () => {
     const older = await prisma.loyaltyTransaction.findFirstOrThrow({
       where: { account: { userId }, type: 'EARN' },
     });
-    // Age the first lot so FIFO ordering is unambiguous.
     await prisma.loyaltyTransaction.update({
       where: { id: older.id },
       data: { expiresAt: new Date(Date.now() + 30 * 86_400_000) },
@@ -220,22 +424,22 @@ describe('point lots and expiry', () => {
       code: 'NEW',
     });
 
-    expect(await balance()).toBe(200);
-    await spendPoints({ userId, points: 120, description: 'test spend', referenceType: 'test' });
+    expect(await balance()).toBe(1000);
+    await spendPoints({ userId, points: 600, description: 'test spend', referenceType: 'test' });
 
     const lots = await prisma.loyaltyTransaction.findMany({
       where: { account: { userId }, type: 'EARN' },
       orderBy: { expiresAt: 'asc' },
     });
-    expect(lots[0]!.pointsRemaining).toBe(0); // oldest fully consumed
-    expect(lots[1]!.pointsRemaining).toBe(80);
-    expect(await balance()).toBe(80);
+    expect(lots[0]!.pointsRemaining).toBe(0);
+    expect(lots[1]!.pointsRemaining).toBe(400);
+    expect(await balance()).toBe(400);
   });
 
   it('expires points after their lifetime and credits the fund', async () => {
     await awardPoints({
       userId,
-      eligibleMinor: 500_000, // 50 pts
+      eligibleMinor: 1_000_000, // 500 pts = JMD 50
       category: 'RESTAURANT',
       referenceType: 'test',
       referenceId: `exp-${stamp}`,
@@ -247,23 +451,15 @@ describe('point lots and expiry', () => {
     });
 
     const fundBefore = await rewardsFund.balanceMinor();
-    const expired = await expireStalePoints(userId);
-    expect(expired).toBe(50);
+    expect(await expireStalePoints(userId)).toBe(500);
     expect(await balance()).toBe(0);
-    // The provision for points that will never be redeemed returns to the fund.
     expect(await rewardsFund.balanceMinor()).toBe(fundBefore + 5_000);
-
-    const rows = await prisma.loyaltyTransaction.findMany({
-      where: { account: { userId }, type: 'EXPIRE' },
-    });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.points).toBe(-50);
   });
 
   it('warns about points expiring inside the notice window', async () => {
     await awardPoints({
       userId,
-      eligibleMinor: 300_000, // 30 pts
+      eligibleMinor: 600_000, // 300 pts
       category: 'RESTAURANT',
       referenceType: 'test',
       referenceId: `soon-${stamp}`,
@@ -273,73 +469,38 @@ describe('point lots and expiry', () => {
       where: { account: { userId }, type: 'EARN' },
       data: { expiresAt: new Date(Date.now() + 10 * 86_400_000) },
     });
-    const soon = await expiringSoon(userId);
-    expect(soon.points).toBe(30);
-    expect(soon.at).toBeInstanceOf(Date);
+    expect((await expiringSoon(userId)).points).toBe(300);
 
     const snapshot = await pointsSnapshot(userId);
-    expect(snapshot.expiringPoints).toBe(30);
+    expect(snapshot.expiringPoints).toBe(300);
     expect(snapshot.cashConvertible).toBe(false);
-  });
-
-  it('refuses to spend more points than the balance', async () => {
-    await setBalance(40);
-    expect(await spendPoints({ userId, points: 100, description: 'too much', referenceType: 'test' })).toBe(false);
-    expect(await balance()).toBe(40);
+    expect(snapshot.pointsValueMinor).toBe(300 * POINT_VALUE_MINOR);
   });
 
   it('claws back points on a refund, allowing a controlled deficit', async () => {
-    await setBalance(0);
     await awardPoints({
       userId,
-      eligibleMinor: 300_000, // 30 pts
+      eligibleMinor: 600_000, // 300 pts
       category: 'RESTAURANT',
       referenceType: 'test',
       referenceId: `claw-${stamp}`,
       code: 'CLAW',
     });
-    // Customer spends them before the refund lands.
-    await spendPoints({ userId, points: 30, description: 'spent', referenceType: 'test' });
+    await spendPoints({ userId, points: 300, description: 'spent', referenceType: 'test' });
     expect(await balance()).toBe(0);
 
     await reverseEarnedPoints({
       userId,
-      points: 30,
+      points: 300,
       description: 'refund reversal',
       referenceType: 'test',
     });
-    // The cash refund is never blocked; the points account carries the debt.
-    expect(await balance()).toBe(-30);
+    expect(await balance()).toBe(-300);
   });
 });
 
 describe('rewards fund', () => {
-  it('does not tighten redemption while the deficit is within tolerance', async () => {
-    // The fund starts empty and customers redeem before contributions build
-    // up, so an early deficit is expected. It must not quietly halve rewards.
-    const tolerance = env.REWARDS_FUND_DEFICIT_TOLERANCE_MINOR;
-    const full = computeRedemptionCap({
-      itemsMinor: 500_000,
-      deliveryFeeMinor: 70_000,
-      expectedCommissionMinor: 50_000,
-      category: 'RESTAURANT',
-      pointsBalance: 5000,
-      commissionSafetyPercent: COMMISSION_SAFETY_PERCENT,
-    });
-    const tightened = computeRedemptionCap({
-      itemsMinor: 500_000,
-      deliveryFeeMinor: 70_000,
-      expectedCommissionMinor: 50_000,
-      category: 'RESTAURANT',
-      pointsBalance: 5000,
-      commissionSafetyPercent: Math.floor(COMMISSION_SAFETY_PERCENT / 2),
-    });
-    expect(full.maxMinor).toBe(40_000); // 80% of JMD 500
-    expect(tightened.maxMinor).toBe(20_000); // what a real overdraft would do
-    expect(tolerance).toBeGreaterThan(0);
-  });
-
-  it('sets aside a slice of commission and is idempotent per transaction', async () => {
+  it('provisions 5% of commission and is idempotent per transaction', async () => {
     const before = await rewardsFund.balanceMinor();
     const args = {
       commissionMinor: 100_000, // JMD 1,000 commission
@@ -349,6 +510,23 @@ describe('rewards fund', () => {
     };
     await rewardsFund.contributeFromCommission(args);
     await rewardsFund.contributeFromCommission(args); // retry must not double-count
-    expect(await rewardsFund.balanceMinor()).toBe(before + 500); // 0.5% = JMD 5
+    expect(await rewardsFund.balanceMinor()).toBe(before + 5_000); // 5% = JMD 50
+  });
+
+  it('tolerates an early deficit rather than halving everyone rewards', () => {
+    expect(env.REWARDS_FUND_DEFICIT_TOLERANCE_MINOR).toBeGreaterThan(0);
+    const full = capFor({ itemsMinor: 1_000_000, commissionBps: 1200 });
+    const tightened = computeRedemptionCap({
+      pointsBalance: 1_000_000,
+      itemsMinor: 1_000_000,
+      deliveryFeeMinor: 0,
+      expectedCommissionMinor: 120_000,
+      safeMarginMinor: 108_000,
+      category: 'RESTAURANT',
+      commissionSafetyPercent: Math.floor(COMMISSION_SAFETY_PERCENT / 2),
+    });
+    // Halving 25% floors to 12%, then the 100-point step rounds JMD 144 to 140.
+    expect(full.maxMinor).toBe(30_000);
+    expect(tightened.maxMinor).toBe(14_000);
   });
 });

@@ -273,7 +273,9 @@ enum RewardsFundEntryType {
 enum EarningStatus {
   PENDING
   AVAILABLE
+  RESERVED // committed to a payout request, no longer spendable
   PAID
+  ON_HOLD // withheld pending a dispute or review
   REVERSED
 }
 
@@ -300,6 +302,8 @@ enum SettlementEntryType {
   TAX
   POINTS_EARNED
   POINTS_REDEEMED
+  WITHDRAWAL_FEE // flat bank-payout fee, recorded as Voryn revenue
+  REFUND
 }
 
 enum PayoutStatus {
@@ -307,6 +311,15 @@ enum PayoutStatus {
   PROCESSING
   PAID
   FAILED
+  CANCELLED
+}
+
+// Points are issued when an order is placed but only become spendable once it
+// completes, so a cancelled order never leaves spendable points behind.
+enum LoyaltyEntryStatus {
+  PENDING
+  AVAILABLE
+  VOIDED
 }
 
 enum PromotionType {
@@ -1504,19 +1517,30 @@ model Refund {
   @@index([paymentId])
 }
 
+// A provider's request to move earnings to their bank. amountMinor is what
+// they receive; feeMinor is the flat bank-withdrawal fee on top, and
+// reservedMinor (their sum) leaves the available balance immediately so the
+// same money cannot be withdrawn twice. A failed payout returns both.
 model ProviderPayout {
-  id          String       @id @default(cuid())
-  providerId  String
-  provider    Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  status      PayoutStatus @default(REQUESTED)
-  amountMinor Int
-  currency    String       @default("JMD")
-  periodStart DateTime?
-  periodEnd   DateTime?
-  paidAt      DateTime?
-  createdAt   DateTime     @default(now())
+  id            String       @id @default(cuid())
+  providerId    String
+  provider      Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  status        PayoutStatus @default(REQUESTED)
+  amountMinor   Int // what lands in the bank account
+  feeMinor      Int          @default(0)
+  reservedMinor Int          @default(0) // amountMinor + feeMinor, held out of available
+  currency      String       @default("JMD")
+  method        String       @default("bank_transfer")
+  destination   String? // e.g. "NCB account ending 4821"
+  failureReason String?
+  idempotencyKey String?     @unique
+  periodStart   DateTime?
+  periodEnd     DateTime?
+  paidAt        DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt @default(now())
 
-  @@index([providerId])
+  @@index([providerId, status])
 }
 
 // One row per settled transaction: the provider's share of a completed
@@ -1526,20 +1550,26 @@ model ProviderEarning {
   id              String        @id @default(cuid())
   providerId      String
   provider        Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  referenceType   String // order | booking | rental
+  referenceType   String // order | booking | rental | delivery
   referenceId     String
   code            String // human reference, e.g. VC-20481
+  // Revenue reporting bucket, frozen at settlement so later category edits
+  // cannot rewrite history.
+  category        ProviderCategory?
   grossMinor      Int // commission basis: what the provider is contractually entitled to
   commissionBps   Int
   commissionMinor Int
   netMinor        Int
   status          EarningStatus @default(PENDING)
   availableAt     DateTime
+  payoutId        String? // set while RESERVED/PAID against a payout request
   paidAt          DateTime?
   createdAt       DateTime      @default(now())
 
   @@unique([referenceType, referenceId])
   @@index([providerId, status, availableAt])
+  @@index([payoutId])
+  @@index([category, createdAt])
 }
 
 // Full money breakdown of a completed transaction (spec: never store only
@@ -1562,7 +1592,9 @@ model LoyaltyAccount {
   id        String   @id @default(cuid())
   userId    String   @unique
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Spendable points. Pending points are counted separately until released.
   pointsBalance Int  @default(0)
+  pendingPoints Int  @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1577,17 +1609,20 @@ model LoyaltyTransaction {
   accountId String
   account   LoyaltyAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   type      LoyaltyEntryType
+  // PENDING earn rows are not spendable; they release on completion.
+  status    LoyaltyEntryStatus @default(AVAILABLE)
   points    Int // signed: earn positive, redeem negative
   description String
   referenceType String?
   referenceId String?
-  expiresAt DateTime? // EARN only
+  expiresAt DateTime? // EARN only; the 12-month clock starts when released
   pointsRemaining Int? // EARN only: unspent, unexpired points from this lot
   createdAt DateTime         @default(now())
 
   @@index([accountId, createdAt])
   // Drives both FIFO redemption and the lazy expiry sweep.
   @@index([accountId, type, expiresAt])
+  @@index([accountId, status, referenceId])
 }
 
 // Time-boxed earn promotions (Double Points Friday, first-order bonus, …).

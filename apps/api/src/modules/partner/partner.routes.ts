@@ -8,6 +8,7 @@ import { haversineKm } from '../../lib/pricing';
 import { validate } from '../../middleware/validate';
 import { ordersService } from '../orders/orders.service';
 import { bookingsService } from '../bookings/bookings.service';
+import { payoutsService } from '../payouts/payouts.service';
 import { requirePartner, sendData } from './partner.middleware';
 import { verificationRouter } from './verification.routes';
 import { supplyRouter } from './supply.routes';
@@ -1022,46 +1023,45 @@ partnerRouter.get('/earnings', async (req, res, next) => {
 partnerRouter.get('/payouts', async (req, res, next) => {
   try {
     const providerId = req.partner!.providerId;
-    const payouts = await prisma.providerPayout.findMany({ where: { providerId }, orderBy: { createdAt: 'desc' } });
-    const paidMinor = payouts.filter((p) => p.status === 'PAID').reduce((s, p) => s + p.amountMinor, 0);
-    const pendingMinor = payouts
-      .filter((p) => p.status === 'REQUESTED' || p.status === 'PROCESSING')
-      .reduce((s, p) => s + p.amountMinor, 0);
-
-    // Wallet sections stay separate: available (cleared, minus payouts already
-    // made or in flight) vs pending (still inside the clearance window).
-    await flipClearedEarnings(providerId);
-    const [availableAgg, pendingAgg] = await Promise.all([
-      prisma.providerEarning.aggregate({
-        where: { providerId, status: 'AVAILABLE' },
-        _sum: { netMinor: true },
-      }),
-      prisma.providerEarning.aggregate({
-        where: { providerId, status: 'PENDING' },
-        _sum: { netMinor: true },
-      }),
+    const [balances, payouts] = await Promise.all([
+      payoutsService.walletBalances(providerId),
+      prisma.providerPayout.findMany({ where: { providerId }, orderBy: { createdAt: 'desc' } }),
     ]);
-    const availableNetMinor = availableAgg._sum.netMinor ?? 0;
-    const pendingEarningsMinor = pendingAgg._sum.netMinor ?? 0;
-
     const lastPaid = payouts.find((p) => p.status === 'PAID');
+
     sendData(res, {
-      available: toMajor(Math.max(0, availableNetMinor - paidMinor - pendingMinor)),
-      pendingEarnings: toMajor(pendingEarningsMinor),
-      pending: toMajor(pendingMinor),
-      paid: toMajor(paidMinor),
+      // The wallet keeps these apart on purpose: money still clearing, money
+      // you can withdraw now, and money already committed to a payout.
+      available: toMajor(balances.availableMinor),
+      pendingEarnings: toMajor(balances.pendingMinor),
+      pending: toMajor(balances.reservedMinor),
+      onHold: toMajor(balances.onHoldMinor),
+      withdrawn: toMajor(balances.withdrawnMinor),
+      withdrawalFee: toMajor(balances.feeMinor),
+      minimumWithdrawal: toMajor(balances.minimumMinor),
+      paid: toMajor(balances.withdrawnMinor),
       last: toMajor(lastPaid?.amountMinor ?? 0),
       lastDate: lastPaid?.paidAt ?? null,
-      requestsEnabled: false,
-      note: 'Payouts are reviewed and settled by Voryn Finance on a weekly cycle.',
+      requestsEnabled: true,
+      note: `Bank transfers take 1 to 2 business days. A flat JMD ${(balances.feeMinor / 100).toLocaleString('en-JM')} fee applies to each withdrawal.`,
       requests: payouts
         .filter((p) => p.status === 'REQUESTED' || p.status === 'PROCESSING')
-        .map((p) => ({ id: p.id, amount: toMajor(p.amountMinor), status: p.status, createdAt: p.createdAt })),
+        .map((p) => ({
+          id: p.id,
+          amount: toMajor(p.amountMinor),
+          fee: toMajor(p.feeMinor),
+          total: toMajor(p.reservedMinor),
+          status: p.status,
+          createdAt: p.createdAt,
+        })),
       history: payouts.map((p) => ({
         id: p.id,
         amount: toMajor(p.amountMinor),
+        fee: toMajor(p.feeMinor),
+        total: toMajor(p.reservedMinor),
         status: p.status,
-        provider: 'Bank transfer',
+        provider: p.destination ?? 'Bank transfer',
+        failureReason: p.failureReason,
         processedAt: p.paidAt,
         createdAt: p.createdAt,
       })),
@@ -1070,6 +1070,60 @@ partnerRouter.get('/payouts', async (req, res, next) => {
     next(err);
   }
 });
+
+// Quote first so the confirmation screen can show exactly what leaves the
+// wallet: the amount requested, the flat fee, and the total deducted.
+partnerRouter.get(
+  '/payouts/quote',
+  validate({ query: z.object({ amount: z.coerce.number().positive() }) }),
+  async (req, res, next) => {
+    try {
+      const amountMinor = toMinor(Number(req.query.amount));
+      const quote = await payoutsService.quoteWithdrawal(req.partner!.providerId, amountMinor);
+      sendData(res, {
+        amount: toMajor(quote.amountMinor),
+        fee: toMajor(quote.feeMinor),
+        total: toMajor(quote.totalMinor),
+        available: toMajor(quote.availableMinor),
+        minimum: toMajor(quote.minimumMinor),
+        sufficient: quote.sufficient,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+partnerRouter.post(
+  '/payouts',
+  validate({
+    body: z.object({
+      amount: z.number().positive(),
+      destination: z.string().max(120).optional(),
+      idempotencyKey: z.string().min(8).max(128).optional(),
+    }),
+  }),
+  async (req, res, next) => {
+    try {
+      const payout = await payoutsService.requestWithdrawal({
+        providerId: req.partner!.providerId,
+        amountMinor: toMinor(req.body.amount),
+        destination: req.body.destination,
+        idempotencyKey: req.body.idempotencyKey,
+      });
+      sendData(res, {
+        id: payout.id,
+        amount: toMajor(payout.amountMinor),
+        fee: toMajor(payout.feeMinor),
+        total: toMajor(payout.reservedMinor),
+        status: payout.status,
+        createdAt: payout.createdAt,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // ── Customers & reviews ──────────────────────────────────────
 

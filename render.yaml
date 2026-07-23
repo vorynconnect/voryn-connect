@@ -114,22 +114,33 @@ services:
       # ── Marketplace tuning (defaults exist; pinned here for visibility) ──
       - key: DELIVERY_MAX_KM
         value: "15"
-      # ── Money model: provider-funded commission + delivery margin ──
+      # ── Money model: provider-funded commission + rewards engine ──
       # Per-category commission rates live in src/lib/commission.ts; these are
       # the platform-wide knobs. Days before a provider's earnings clear:
       - key: EARNINGS_CLEAR_DAYS
         value: "2"
-      # Voryn's share of the delivery fee (2200 = 22%), clamped by min/max.
-      # The courier keeps the remainder plus 100% of tips.
-      - key: DELIVERY_MARGIN_BPS
-        value: "2200"
-      - key: DELIVERY_MARGIN_MIN_MINOR
-        value: "5000"
-      - key: DELIVERY_MARGIN_MAX_MINOR
-        value: "20000"
-      # Commission on a ride fare (1200 = 12%). Never applied to tips.
-      - key: RIDE_COMMISSION_BPS
+      # Couriers pay commission on the delivery fee like any other provider
+      # (1200 = 12%). Tips are never commissioned.
+      - key: COURIER_COMMISSION_BPS
         value: "1200"
+      # Commission on a ride fare (1500 = 15%). Never applied to tips.
+      - key: RIDE_COMMISSION_BPS
+        value: "1500"
+      # Direct costs netted off commission before any points discount is
+      # allowed, plus the minimum profit Voryn keeps on every order.
+      - key: PAYMENT_PROCESSING_BPS
+        value: "350"
+      - key: PAYMENT_PROCESSING_FIXED_MINOR
+        value: "3000"
+      - key: REFUND_PROVISION_BPS
+        value: "100"
+      - key: MIN_PROFIT_PER_ORDER_MINOR
+        value: "2000"
+      # Flat bank-withdrawal fee (JMD 150) and minimum withdrawal (JMD 2,000).
+      - key: PAYOUT_FLAT_FEE_MINOR
+        value: "15000"
+      - key: PAYOUT_MINIMUM_MINOR
+        value: "200000"
       # Rewards fund deficit tolerated before redemption caps tighten
       # (JMD 50,000). The per-order commission cap is the real protection.
       - key: REWARDS_FUND_DEFICIT_TOLERANCE_MINOR

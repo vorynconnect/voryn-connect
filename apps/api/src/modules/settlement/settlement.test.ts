@@ -1,6 +1,6 @@
 /**
- * Money-model integration tests: provider-funded commission, delivery-margin
- * courier pay, Voryn Points (1 pt = JMD 1, 20% cap, earn at delivery), and the
+ * Money-model integration tests: provider-funded commission, courier
+ * commission, Voryn Points (10 pts = JMD 1, capped by commission), and the
  * separated provider earnings ledger. Runs against the local dev database.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -103,7 +103,7 @@ beforeAll(async () => {
       status: 'ACTIVE',
       emailVerifiedAt: new Date(),
       wallet: { create: {} },
-      loyaltyAccount: { create: { pointsBalance: 1000 } },
+      loyaltyAccount: { create: { pointsBalance: 5000 } },
       addresses: {
         // Same coordinates as the branch: distance 0, so the delivery fee is
         // exactly the merchant base fee and the test math is deterministic.
@@ -154,28 +154,26 @@ afterAll(async () => {
 describe('commission and split math', () => {
   it('uses category defaults with per-provider overrides', () => {
     expect(commissionBpsForProvider({ commissionBps: null, categories: ['RESTAURANT'] })).toBe(1000);
-    expect(commissionBpsForProvider({ commissionBps: null, categories: ['GROCERY'] })).toBe(700);
-    expect(commissionBpsForProvider({ commissionBps: null, categories: ['SUPPLIER'] })).toBe(400);
+    expect(commissionBpsForProvider({ commissionBps: null, categories: ['GROCERY'] })).toBe(800);
+    expect(commissionBpsForProvider({ commissionBps: null, categories: ['SUPPLIER'] })).toBe(500);
     expect(commissionBpsForProvider({ commissionBps: 850, categories: ['RESTAURANT'] })).toBe(850);
   });
 
-  it('splits delivery fees into guaranteed courier pay plus a clamped margin', () => {
-    // JMD 900 fee → JMD 200 margin (the spec example), courier gets JMD 700.
-    expect(deliverySplit(90000)).toEqual({ courierCompensationMinor: 70000, vorynMarginMinor: 20000 });
-    // JMD 250 fee → 22% rounds to JMD 60, courier gets JMD 190.
-    expect(deliverySplit(25000)).toEqual({ courierCompensationMinor: 19000, vorynMarginMinor: 6000 });
-    // JMD 150 fee → clamped up to the JMD 50 minimum margin.
-    expect(deliverySplit(15000)).toEqual({ courierCompensationMinor: 10000, vorynMarginMinor: 5000 });
+  it('charges couriers 12% of the delivery fee', () => {
+    // JMD 900 fee: Voryn takes JMD 108, the courier keeps JMD 792.
+    expect(deliverySplit(90000)).toEqual({ courierCompensationMinor: 79200, vorynMarginMinor: 10800 });
+    // JMD 250 fee: JMD 30 commission, JMD 220 to the courier.
+    expect(deliverySplit(25000)).toEqual({ courierCompensationMinor: 22000, vorynMarginMinor: 3000 });
   });
 
-  it('prices ride commission at 12% of the fare, never tips', () => {
-    expect(rideDriverEarningsMinor(100000)).toBe(88000);
+  it('prices ride commission at 15% of the fare, never tips', () => {
+    expect(rideDriverEarningsMinor(100000)).toBe(85000);
   });
 
-  it('earns 1 point per JMD 100 at the restaurant rate', () => {
+  it('earns 5 points per JMD 100 at the restaurant rate', () => {
     expect(
-      computePointsEarned({ eligibleMinor: 370000, category: 'RESTAURANT', tier: 'BRONZE' }),
-    ).toBe(37);
+      computePointsEarned({ eligibleMinor: 394000, category: 'RESTAURANT', tier: 'BRONZE' }),
+    ).toBe(197);
   });
 });
 
@@ -186,15 +184,15 @@ describe('order checkout with points', () => {
     await seedCart();
     const quote = await request(app).get(`/v1/orders/quote?addressId=${addressId}`).set(auth()).expect(200);
     expect(quote.body.quote.serviceFeeMinor).toBe(0); // no customer platform fee
-    // Balance is 1,000 pts and 20% of the JMD 4,250 base would be 850, but
-    // Voryn only expects JMD 400 of commission here, so the safety cap holds
-    // redemption to 80% of that: JMD 320.
+    // The customer holds 5,000 points (JMD 500) and 5% of the JMD 4,250 base
+    // would be JMD 212, but Voryn only expects JMD 400 of commission here, so
+    // 25% of that caps redemption at JMD 100.
     expect(quote.body.quote.points).toMatchObject({
-      pointsBalance: 1000,
-      maxPoints: 320,
-      maxMinor: 32000,
+      pointsBalance: 5000,
+      maxPoints: 1000,
+      maxMinor: 10000,
       limitedBy: 'COMMISSION_SAFETY',
-      pointValueMinor: 100,
+      pointValueMinor: 10,
       tier: 'BRONZE',
     });
 
@@ -206,21 +204,25 @@ describe('order checkout with points', () => {
         addressId,
         paymentMethodType: 'VORYN_WALLET',
         tipMinor: 30000,
-        pointsToRedeem: 300,
+        pointsToRedeem: 600,
         idempotencyKey: `settle-co-1-${stamp}`,
       })
       .expect(201);
     orderId = res.body.order.id;
 
-    // 4,000 items + 250 delivery + 400 tax + 300 tip − 300 points = 4,650.
-    expect(res.body.order.totalMinor).toBe(465000);
-    expect(res.body.order.pointsRedeemed).toBe(300);
-    expect(res.body.order.pointsDiscountMinor).toBe(30000);
-    expect(before - (await walletBalance(customerId))).toBe(465000);
-    expect(await pointsBalance(customerId)).toBe(700); // debited at checkout
+    // 4,000 items + 250 delivery + 400 tax + 300 tip − 60 points = 4,890.
+    expect(res.body.order.totalMinor).toBe(489000);
+    expect(res.body.order.pointsRedeemed).toBe(600);
+    expect(res.body.order.pointsDiscountMinor).toBe(6000);
+    expect(before - (await walletBalance(customerId))).toBe(489000);
+    expect(await pointsBalance(customerId)).toBe(4400); // debited at checkout
+
+    // Points for this order are issued but held until it completes.
+    const account = await prisma.loyaltyAccount.findUniqueOrThrow({ where: { userId: customerId } });
+    expect(account.pendingPoints).toBe(197); // 5 pts per JMD 100 of the JMD 3,940 eligible
   });
 
-  it('settles once at delivery: merchant net, courier split, points earn, ledger', async () => {
+  it('settles once at delivery: merchant net, courier split, points released, ledger', async () => {
     await ordersService.assignCourier(orderId, courierProfileId);
     await ordersService.transition(orderId, 'DELIVERED', 'Delivered');
 
@@ -235,33 +237,38 @@ describe('order checkout with points', () => {
     expect(earning.commissionMinor).toBe(40000);
     expect(earning.netMinor).toBe(360000);
     expect(earning.status).toBe('PENDING');
+    expect(earning.category).toBe('RESTAURANT');
 
-    // Courier: JMD 250 fee − 60 margin = 190, plus the full JMD 300 tip.
-    expect(await walletBalance(courierUserId)).toBe(49000);
+    // Courier: JMD 250 fee less 12% commission = JMD 220, plus the whole tip.
+    expect(await walletBalance(courierUserId)).toBe(52000);
 
-    // Points earned at delivery on the eligible amount (4,000 − 300 = 3,700 → 37 pts).
-    expect(await pointsBalance(customerId)).toBe(737);
+    // Pending points become spendable now that the order is complete.
+    const account = await prisma.loyaltyAccount.findUniqueOrThrow({ where: { userId: customerId } });
+    expect(account.pendingPoints).toBe(0);
+    expect(account.pointsBalance).toBe(4597); // 4,400 + 197 released
 
-    // Full breakdown recorded — refunds and reports never guess from totals.
     const records = await prisma.settlementRecord.findMany({
       where: { referenceType: 'order', referenceId: orderId },
     });
     const byType = Object.fromEntries(records.map((r) => [r.entryType, r.amountMinor]));
     expect(byType).toMatchObject({
-      CUSTOMER_PAYMENT: 465000,
+      CUSTOMER_PAYMENT: 489000,
       MERCHANT_GROSS_SALE: 400000,
       VORYN_COMMISSION: 40000,
       PROVIDER_NET_EARNING: 360000,
       DELIVERY_FEE: 25000,
-      COURIER_EARNING: 19000,
-      VORYN_DELIVERY_MARGIN: 6000,
+      COURIER_EARNING: 22000,
+      VORYN_DELIVERY_MARGIN: 3000,
       TIP: 30000,
       TAX: 40000,
-      VORYN_FUNDED_DISCOUNT: 30000,
-      POINTS_REDEEMED: 30000,
-      POINTS_EARNED: 3700,
+      VORYN_FUNDED_DISCOUNT: 6000,
+      POINTS_REDEEMED: 6000,
+      POINTS_EARNED: 1970,
     });
     expect(byType.SERVICE_FEE).toBeUndefined(); // zero rows are not written
+
+    // The reward cost stayed well inside the commission it protects.
+    expect(byType.VORYN_FUNDED_DISCOUNT).toBeLessThan(byType.VORYN_COMMISSION!);
   });
 
   it('is idempotent when the order later completes', async () => {
@@ -270,24 +277,25 @@ describe('order checkout with points', () => {
       where: { referenceType: 'order', referenceId: orderId },
     });
     expect(earnings).toHaveLength(1);
-    expect(await walletBalance(courierUserId)).toBe(49000); // no double payout
-    expect(await pointsBalance(customerId)).toBe(737); // no double earn
+    expect(await walletBalance(courierUserId)).toBe(52000); // no double payout
+    expect(await pointsBalance(customerId)).toBe(4597); // no double release
   });
 
-  it('restores redeemed points when an order is cancelled', async () => {
+  it('restores redeemed points and voids pending ones when an order is cancelled', async () => {
     await seedCart();
+    const before = await pointsBalance(customerId);
     const res = await request(app)
       .post('/v1/orders/checkout')
       .set(auth())
       .send({
         addressId,
         paymentMethodType: 'VORYN_WALLET',
-        pointsToRedeem: 200,
+        pointsToRedeem: 500,
         idempotencyKey: `settle-co-2-${stamp}`,
       })
       .expect(201);
-    expect(await pointsBalance(customerId)).toBe(537);
-    const before = await walletBalance(customerId);
+    expect(await pointsBalance(customerId)).toBe(before - 500);
+    const walletBefore = await walletBalance(customerId);
 
     await request(app)
       .post(`/v1/orders/${res.body.order.id}/cancel`)
@@ -295,8 +303,10 @@ describe('order checkout with points', () => {
       .send({ reason: 'Changed my mind' })
       .expect(200);
 
-    expect(await pointsBalance(customerId)).toBe(737); // points back
-    expect((await walletBalance(customerId)) - before).toBe(res.body.order.totalMinor); // money back
+    expect(await pointsBalance(customerId)).toBe(before); // spent points back
+    const account = await prisma.loyaltyAccount.findUniqueOrThrow({ where: { userId: customerId } });
+    expect(account.pendingPoints).toBe(0); // and nothing left pending
+    expect((await walletBalance(customerId)) - walletBefore).toBe(res.body.order.totalMinor);
   });
 
   it('refuses to discount an order below its own commission', async () => {
@@ -314,11 +324,10 @@ describe('order checkout with points', () => {
       .expect(201);
 
     // The customer asked to spend everything. Voryn expects JMD 400 of
-    // commission on this order, so at most JMD 320 (80%) may be given back —
-    // the order stays profitable no matter what the client sends.
-    expect(res.body.order.pointsRedeemed).toBe(320);
-    expect(res.body.order.pointsDiscountMinor).toBe(32000);
-    expect(await pointsBalance(customerId)).toBe(before - 320);
+    // commission on this order, so at most JMD 100 (25%) may be given back.
+    expect(res.body.order.pointsRedeemed).toBe(1000);
+    expect(res.body.order.pointsDiscountMinor).toBe(10000);
+    expect(await pointsBalance(customerId)).toBe(before - 1000);
 
     const order = await prisma.order.findUniqueOrThrow({ where: { id: res.body.order.id } });
     const commissionMinor = Math.round(order.subtotalMinor * 0.1);
@@ -346,5 +355,52 @@ describe('provider earnings ledger', () => {
     const payouts = await request(app).get('/v1/partner/payouts').set(pAuth()).expect(200);
     expect(payouts.body.data.available).toBe(second.body.data.summary.available);
     expect(payouts.body.data.pendingEarnings).toBe(0);
+  });
+});
+
+describe('proportional refunds', () => {
+  it('reverses commission, earnings and points in the same proportion', async () => {
+    // Fresh order so the arithmetic is not entangled with earlier cases.
+    await seedCart();
+    const res = await request(app)
+      .post('/v1/orders/checkout')
+      .set(auth())
+      .send({
+        addressId,
+        paymentMethodType: 'VORYN_WALLET',
+        idempotencyKey: `settle-refund-${stamp}`,
+      })
+      .expect(201);
+    const id = res.body.order.id;
+    await ordersService.transition(id, 'DELIVERED', 'Delivered');
+
+    const before = await prisma.order.findUniqueOrThrow({ where: { id } });
+    const earningBefore = await prisma.providerEarning.findUniqueOrThrow({
+      where: { referenceType_referenceId: { referenceType: 'order', referenceId: id } },
+    });
+    const pointsBefore = await pointsBalance(customerId);
+    expect(before.pointsEarned).toBe(200); // JMD 4,000 of items at 5 pts per 100
+
+    // Refund a fifth of the item value.
+    const { refundOrderSettlement } = await import('./refunds.service');
+    const result = await refundOrderSettlement({
+      orderId: id,
+      refundMinor: before.subtotalMinor / 5,
+      reason: 'One item was missing',
+    });
+    expect(result.refundedShare).toBeCloseTo(0.2);
+    expect(result.pointsReversed).toBe(40); // a fifth of the 200 points earned
+
+    const earningAfter = await prisma.providerEarning.findUniqueOrThrow({
+      where: { referenceType_referenceId: { referenceType: 'order', referenceId: id } },
+    });
+    expect(earningAfter.grossMinor).toBe(earningBefore.grossMinor * 0.8);
+    expect(earningAfter.commissionMinor).toBe(earningBefore.commissionMinor * 0.8);
+    expect(earningAfter.netMinor).toBe(earningBefore.netMinor * 0.8);
+    expect(await pointsBalance(customerId)).toBe(pointsBefore - 40);
+
+    // The customer cannot keep points for goods they sent back.
+    const after = await prisma.order.findUniqueOrThrow({ where: { id } });
+    expect(after.pointsEarned).toBe(160);
   });
 });

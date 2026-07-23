@@ -34,11 +34,14 @@ type DeliveryQuote = {
     courierPayMinor: number;
     points: {
       pointsBalance: number;
+      pointsValueMinor: number;
       maxPoints: number;
       maxMinor: number;
       pointValueMinor: number;
       maxPercent: number;
       minOrderMinor: number;
+      minRedemptionPoints: number;
+      incrementPoints: number;
       /** Which rule held the redemption down, so we can explain it. */
       limitedBy: string;
       reason: string;
@@ -256,15 +259,38 @@ export default function CheckoutScreen() {
               <Ionicons name="star" size={19} color={colors.blue} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.paymentTitle}>Redeem points</Text>
-              <Text style={styles.paymentBody}>
-                {redeemablePoints > 0
-                  ? `You have ${points.toLocaleString()} points. Save ${formatJmd(quote?.points.maxMinor ?? 0)} on this order.`
-                  : `You have ${points.toLocaleString()} points.`}
-              </Text>
-              {quote?.points.reason && quote.points.limitedBy !== 'BALANCE' ? (
-                <Text style={styles.pointsNote}>{quote.points.reason}</Text>
-              ) : null}
+              <Text style={styles.paymentTitle}>Voryn Points</Text>
+              {quote ? (
+                <>
+                  <View style={styles.pointsLine}>
+                    <Text style={styles.paymentBody}>Available</Text>
+                    <Text style={styles.pointsLineValue}>
+                      {points.toLocaleString()} pts · {formatJmd(quote.points.pointsValueMinor)}
+                    </Text>
+                  </View>
+                  {redeemablePoints > 0 ? (
+                    <>
+                      <View style={styles.pointsLine}>
+                        <Text style={styles.paymentBody}>Usable on this order</Text>
+                        <Text style={styles.pointsLineValue}>
+                          {redeemablePoints.toLocaleString()} pts
+                        </Text>
+                      </View>
+                      <View style={styles.pointsLine}>
+                        <Text style={styles.paymentBody}>Discount</Text>
+                        <Text style={[styles.pointsLineValue, { color: colors.success }]}>
+                          {formatJmd(quote.points.maxMinor)}
+                        </Text>
+                      </View>
+                    </>
+                  ) : null}
+                  {quote.points.reason && quote.points.limitedBy !== 'BALANCE' ? (
+                    <Text style={styles.pointsNote}>{quote.points.reason}</Text>
+                  ) : null}
+                </>
+              ) : (
+                <Text style={styles.paymentBody}>{points.toLocaleString()} points</Text>
+              )}
             </View>
             <Switch
               value={redeemPoints}
@@ -451,6 +477,8 @@ const styles = StyleSheet.create({
   paymentTitle: { fontSize: fontSize.base, fontWeight: fontWeight.bold, color: colors.textPrimary },
   paymentBody: { fontSize: fontSize.sm, color: colors.textSecondary, marginTop: 1 },
   pointsNote: { fontSize: fontSize.xs, color: colors.textSecondary, marginTop: 3, fontStyle: 'italic' },
+  pointsLine: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 },
+  pointsLineValue: { fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: colors.textPrimary },
   recommendedBadge: {
     backgroundColor: colors.successTint,
     borderRadius: radius.pill,

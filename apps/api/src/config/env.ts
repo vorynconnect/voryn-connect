@@ -83,17 +83,29 @@ const envSchema = z.object({
   // Money model: provider earnings clear from pending to available after this
   // many days; the weekly payout run pays available balances.
   EARNINGS_CLEAR_DAYS: z.coerce.number().int().min(0).default(2),
-  // Delivery-margin model: Voryn keeps a slice of the customer delivery fee and
-  // the courier is guaranteed the remainder plus 100% of tips.
-  DELIVERY_MARGIN_BPS: z.coerce.number().int().min(0).max(5000).default(2200),
-  DELIVERY_MARGIN_MIN_MINOR: z.coerce.number().int().min(0).default(5000),
-  DELIVERY_MARGIN_MAX_MINOR: z.coerce.number().int().min(0).default(20000),
+  // Couriers pay a commission on the delivery fee, like every other provider
+  // type. Tips are never commissioned.
+  COURIER_COMMISSION_BPS: z.coerce.number().int().min(0).max(5000).default(1200),
   // Ride drivers pay a percentage commission on the fare (never on tips).
-  RIDE_COMMISSION_BPS: z.coerce.number().int().min(0).max(5000).default(1200),
+  RIDE_COMMISSION_BPS: z.coerce.number().int().min(0).max(5000).default(1500),
   // The rewards fund is a provision, not a gate: it legitimately runs a small
   // deficit early on, because customers redeem before contributions accumulate.
   // Only a deficit past this tolerance tightens the redemption safety cap.
   REWARDS_FUND_DEFICIT_TOLERANCE_MINOR: z.coerce.number().int().min(0).default(5_000_000),
+  // Direct costs on a transaction, subtracted from commission before any points
+  // discount is allowed (see lib/margin.ts). Card gateway pricing in Jamaica is
+  // typically a percentage plus a flat item fee; wallet and cash cost nothing.
+  PAYMENT_PROCESSING_BPS: z.coerce.number().int().min(0).max(2000).default(350),
+  PAYMENT_PROCESSING_FIXED_MINOR: z.coerce.number().int().min(0).default(3_000),
+  // Provision for refunds and chargebacks, as a share of order value.
+  REFUND_PROVISION_BPS: z.coerce.number().int().min(0).max(2000).default(100),
+  // Voryn must clear at least this much on an order after costs, before points.
+  MIN_PROFIT_PER_ORDER_MINOR: z.coerce.number().int().min(0).default(2_000),
+  // Flat fee charged to a provider for a bank withdrawal, and the smallest
+  // withdrawal allowed. The provider receives the amount they request; the fee
+  // is added on top of it when reserving from their available balance.
+  PAYOUT_FLAT_FEE_MINOR: z.coerce.number().int().min(0).default(15_000),
+  PAYOUT_MINIMUM_MINOR: z.coerce.number().int().min(0).default(200_000),
 });
 
 const parsed = envSchema.safeParse(process.env);

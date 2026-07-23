@@ -14,17 +14,17 @@ import { env } from '../config/env';
  *  - Tips carry no commission and are never reduced by points.
  */
 export const CATEGORY_COMMISSION_BPS: Record<ProviderCategory, number> = {
-  RESTAURANT: 1000,
-  GROCERY: 700,
-  PHARMACY: 700,
-  CONVENIENCE: 700,
-  DRINKS: 700,
-  RIDES: 1200,
-  VEHICLE_RENTAL: 1000,
-  AUTO_CARE: 1000,
-  TECHNICIAN: 1000,
-  HOME_SERVICES: 1000,
-  SUPPLIER: 400, // B2B settles on delivery; commission applies when wallet settlement lands
+  RESTAURANT: 1000, // 10%
+  GROCERY: 800, // 8%
+  PHARMACY: 800,
+  CONVENIENCE: 800,
+  DRINKS: 800,
+  RIDES: 1500, // 15%
+  VEHICLE_RENTAL: 1000, // 10%
+  AUTO_CARE: 1200, // 12%
+  TECHNICIAN: 1200,
+  HOME_SERVICES: 1200,
+  SUPPLIER: 500, // 5%; B2B settles on delivery
 };
 
 const DEFAULT_COMMISSION_BPS = 1000;
@@ -44,22 +44,21 @@ export function commissionOfMinor(basisMinor: number, bps: number): number {
 }
 
 /**
- * Delivery-margin model: the courier is guaranteed the delivery fee minus
- * Voryn's margin, plus 100% of tips. Shown to couriers as their earnings, not
- * as a fee deducted from a bigger number.
+ * Courier settlement. Couriers now pay a straight commission on the delivery
+ * fee (COURIER_COMMISSION_BPS, 12%) rather than the older "Voryn keeps the
+ * remaining margin" model, so every provider type is priced the same way and
+ * couriers can see the rate they are charged. Tips are never commissioned.
  */
 export function deliverySplit(deliveryFeeMinor: number): {
   courierCompensationMinor: number;
   vorynMarginMinor: number;
 } {
   if (deliveryFeeMinor <= 0) return { courierCompensationMinor: 0, vorynMarginMinor: 0 };
-  const raw = Math.round((deliveryFeeMinor * env.DELIVERY_MARGIN_BPS) / 10000);
-  const rounded = Math.round(raw / 1000) * 1000; // whole JMD 10 steps
-  const margin = Math.min(
-    Math.min(env.DELIVERY_MARGIN_MAX_MINOR, deliveryFeeMinor),
-    Math.max(env.DELIVERY_MARGIN_MIN_MINOR, rounded),
-  );
-  return { courierCompensationMinor: deliveryFeeMinor - margin, vorynMarginMinor: margin };
+  const commission = commissionOfMinor(deliveryFeeMinor, env.COURIER_COMMISSION_BPS);
+  return {
+    courierCompensationMinor: deliveryFeeMinor - commission,
+    vorynMarginMinor: commission,
+  };
 }
 
 /** Driver's take-home on a ride fare (tips excluded — they are added whole). */

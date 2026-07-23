@@ -1,4 +1,4 @@
-import { Prisma, SettlementEntryType, WalletEntryType } from '@prisma/client';
+import { Prisma, ProviderCategory, SettlementEntryType, WalletEntryType } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
 import {
@@ -7,7 +7,7 @@ import {
   deliverySplit,
 } from '../../lib/commission';
 import { POINT_VALUE_MINOR } from '../../lib/loyalty';
-import { awardPoints, rewardsFund } from '../rewards/rewards.service';
+import { releasePendingPoints, rewardsFund } from '../rewards/rewards.service';
 import { walletService } from '../wallet/wallet.service';
 
 /**
@@ -49,6 +49,7 @@ async function createEarning(input: {
   code: string;
   grossMinor: number;
   commissionBps: number;
+  category?: ProviderCategory | null;
 }): Promise<boolean> {
   const commissionMinor = commissionOfMinor(input.grossMinor, input.commissionBps);
   try {
@@ -58,6 +59,8 @@ async function createEarning(input: {
         referenceType: input.referenceType,
         referenceId: input.referenceId,
         code: input.code,
+        // Frozen here so a later category change cannot rewrite revenue history.
+        category: input.category ?? null,
         grossMinor: input.grossMinor,
         commissionBps: input.commissionBps,
         commissionMinor,
@@ -111,6 +114,7 @@ export const settlementService = {
       code: order.code,
       grossMinor: basisMinor,
       commissionBps: bps,
+      category: order.provider.categories[0],
     });
     if (!isFirstSettlement) return;
 
@@ -139,23 +143,15 @@ export const settlementService = {
       order.subtotalMinor - order.discountMinor - order.pointsDiscountMinor,
     );
     let pointsEarned = 0;
-    if (eligibleMinor > 0 && order.pointsEarned === 0) {
+    if (order.pointsEarned === 0) {
       await ensureWalletAndLoyalty(order.customerId);
-      const priorOrders = await prisma.order.count({
-        where: {
-          customerId: order.customerId,
-          status: { in: ['DELIVERED', 'COMPLETED'] },
-          id: { not: order.id },
-        },
-      });
-      pointsEarned = await awardPoints({
+      // The points were issued at checkout and held pending; completing the
+      // order is what makes them spendable and starts their 12-month clock.
+      pointsEarned = await releasePendingPoints({
         userId: order.customerId,
-        eligibleMinor,
-        category: order.provider.categories[0] ?? 'RESTAURANT',
         referenceType: 'order',
         referenceId: order.id,
         code: order.code,
-        isFirstOrder: priorOrders === 0,
       });
       if (pointsEarned > 0) {
         await prisma.order.update({ where: { id: order.id }, data: { pointsEarned } });
@@ -229,6 +225,7 @@ export const settlementService = {
       code: booking.code,
       grossMinor: basisMinor,
       commissionBps: bps,
+      category: booking.provider.categories[0],
     });
     if (!isFirstSettlement) return;
 
@@ -260,6 +257,7 @@ export const settlementService = {
       code: rental.code,
       grossMinor: basisMinor,
       commissionBps: bps,
+      category: rental.provider.categories[0],
     });
     if (!isFirstSettlement) return;
 

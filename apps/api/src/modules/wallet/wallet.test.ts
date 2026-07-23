@@ -134,8 +134,10 @@ describe('redeem points', () => {
 
   it('reports the redemption terms on the wallet snapshot', async () => {
     const res = await request(app).get('/v1/wallet').set(auth()).expect(200);
-    expect(res.body.loyalty.pointValueMinor).toBe(100); // 1 pt = JMD 1
-    expect(res.body.loyalty.maxRedeemPercent).toBe(20);
+    expect(res.body.loyalty.pointValueMinor).toBe(10); // 10 pts = JMD 1
+    expect(res.body.loyalty.pointsPerJmd).toBe(10);
+    expect(res.body.loyalty.maxRedeemPercent).toBe(5);
+    expect(res.body.loyalty.minRedemptionPoints).toBe(500);
     expect(res.body.loyalty.cashConvertible).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import { prisma } from '../../lib/prisma';
 import { AppError } from '../../lib/errors';
 import { notifyProviderStaff } from '../../lib/notify';
 import { requireAuth, requireRole } from '../../middleware/auth';
+import { revenueRouter } from './revenue.routes';
 import { validate } from '../../middleware/validate';
 import { sendData } from '../partner/partner.middleware';
 import { verificationView } from '../partner/verification.routes';
@@ -16,6 +17,8 @@ import { verificationView } from '../partner/verification.routes';
  */
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole('ADMIN', 'SUPER_ADMIN'));
+// Revenue and loyalty reporting (commission by category, points liability).
+adminRouter.use('/', revenueRouter);
 
 type QueueStatus = 'incomplete' | 'in_review' | 'rejected' | 'approved';
 
