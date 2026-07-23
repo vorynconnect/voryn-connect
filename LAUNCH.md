@@ -306,73 +306,88 @@ delivery margin.
 **Commission rates** are per provider category, defined in
 `apps/api/src/lib/commission.ts`:
 
-| Provider category                    | Rate |
-| ------------------------------------ | ---: |
-| Restaurants                          |  10% |
-| Grocery, pharmacy, convenience, drinks |  7% |
-| Home services, technicians, auto care |  10% |
-| Vehicle rental                       |  10% |
-| Ride drivers (`RIDE_COMMISSION_BPS`) |  12% |
-| Suppliers (B2B)                      |   4% |
+| Provider category                     | Rate |
+| ------------------------------------- | ---: |
+| Restaurants                           |  10% |
+| Grocery, pharmacy, convenience, drinks |   8% |
+| Home services, technicians, auto care |  12% |
+| Vehicle rental                        |  10% |
+| Ride drivers (`RIDE_COMMISSION_BPS`)  |  15% |
+| Delivery couriers (`COURIER_COMMISSION_BPS`) | 12% |
+| Suppliers (B2B)                       |   5% |
 
 A negotiated rate for an individual provider goes in `Provider.commissionBps`
 (basis points, e.g. `850` = 8.5%); it overrides the category default. Whatever
 you agree must match the signed provider agreement, since the commission basis
 is a contractual term.
 
-**Couriers are paid a delivery margin, not a commission.** The customer's
-delivery fee is split into the courier's guaranteed compensation and Voryn's
-margin (`DELIVERY_MARGIN_BPS`, clamped by the min/max vars). Couriers keep
-**100% of tips**, and no commission is ever charged on a tip.
+Commission is charged on the commissionable provider amount only. Tips, taxes,
+refundable deposits, withdrawal fees and Voryn-funded points discounts are all
+excluded, so a customer redeeming points never reduces what the provider earns.
 
 **Provider earnings** land in the `ProviderEarning` ledger as `PENDING`, clear
-to `AVAILABLE` after `EARNINGS_CLEAR_DAYS`, and are what the partner dashboard
-wallet reports. Paying providers out is still a **manual finance step** — there
-is no automated bank transfer; settle weekly against the available balance and
-record a `ProviderPayout` row.
+to `AVAILABLE` after `EARNINGS_CLEAR_DAYS`, move to `RESERVED` when committed to
+a payout, and end as `PAID`. The partner wallet reports those states separately.
 
-**Voryn Points**: 1 point = JMD 1 of discount, earned slowly (about 1% of
-eligible items, never on delivery, tax, fees or tips). Points are **not
-convertible to cash** — that is deliberate, because freely convertible points
-start to resemble stored monetary value, which BOJ treats as a regulated
-payment activity. Do not enable a points-to-cash path without your payment
-partner and legal adviser.
+**Bank payouts.** The provider enters the amount they want to receive; a flat
+`PAYOUT_FLAT_FEE_MINOR` (JMD 150) is added on top, with a `PAYOUT_MINIMUM_MINOR`
+(JMD 2,000) floor. Both leave the available balance the moment the request is
+made, so the same earnings can never fund two payouts. A successful payout books
+the fee as revenue; a failed one returns the amount and the fee together. Voryn
+does not operate the transfer rail — settle through a bank or an authorised
+payment service provider.
 
-**The rewards engine** (`src/lib/loyalty.ts` + `modules/rewards`) decides how
-much any single order may absorb. Every limit is evaluated and the tightest
-wins, so a redemption is capped by whichever of these binds first:
+**Voryn Points**: customers earn 5 points per JMD 100 of eligible items, and
+10 points are worth JMD 1. That reads as a generous "5 points per JMD 100" while
+costing about **0.5%** of spend. Redemption moves in 100-point steps with a
+500-point (JMD 50) minimum. Points are **not convertible to cash** — deliberate,
+because freely convertible points start to resemble stored monetary value, which
+BOJ treats as a regulated payment activity. Do not enable a points-to-cash path
+without your payment partner and legal adviser.
+
+**The rewards engine** (`src/lib/loyalty.ts`, `src/lib/margin.ts` and
+`modules/rewards`) decides how much any single order may absorb. Every limit is
+evaluated and the tightest wins:
 
 | Limit | Rule |
 | ----- | ---- |
 | Customer balance | Points actually held |
-| Order share | 20% of items + delivery |
-| **Commission safety** | **80% of the commission Voryn expects on that order** |
+| Order share | 5% of items + delivery |
+| **Commission safety** | **25% of the commission Voryn expects on that order** |
+| **Margin safety** | **What survives after card fees, refund provision and Voryn's minimum profit** |
 | Delivery coverage | Never enough to make delivery free |
 | Minimum order | No redemption below JMD 1,500 |
 
-The commission safety cap is the one that matters. Without it a customer with a
-large balance could redeem 20% of a JMD 4,600 order (JMD 920) against a JMD 435
-commission and turn a profitable order into a JMD 485 loss. With it, that same
-order redeems JMD 348 and Voryn still clears JMD 87. Checkout tells the customer
-which limit applied rather than silently offering less than they expected.
+The last two are what keep every order profitable. On a JMD 5,000 retail sale at
+8%, five percent of the order would be JMD 250 against only JMD 400 of
+commission; the engine allows JMD 100 and Voryn still clears JMD 300. The margin
+guard matters most on card payments, where gateway fees consume commission
+before any discount applies. Checkout tells the customer which limit applied
+rather than silently offering less than they expected.
 
-Earn rates vary by category, because margins do — groceries earn 0.75 points per
-JMD 100 while home services earn 2 and vehicle rentals 3. Membership tiers
-(Bronze, Silver, Gold, Platinum, set from trailing-12-month spend) and
-time-boxed campaigns raise the **earn rate only**; nothing ever raises what a
-point is worth at redemption, which keeps the liability bounded.
+Points are issued `PENDING` at checkout and only become spendable when the order
+completes, so nobody can earn, spend and then cancel. They expire 12 months
+after release, oldest spent first, with a 30-day warning. A refund reverses
+everything proportionally: the provider's earning and Voryn's commission shrink
+by the same share, points earned on the refunded portion are clawed back, and
+the matching share of spent points is returned.
 
-Points expire 12 months after they are earned, oldest spent first, and the app
-warns 30 days ahead. Expired points return their provision to the rewards fund.
+Membership tiers (Bronze to Platinum, from trailing-12-month spend) and
+time-boxed campaigns raise the **earn rate only**. Nothing ever raises what a
+point is worth, which is what keeps the liability calculable.
 
 **The rewards fund** is a provision, not a gate. Each settled transaction sets
-aside 0.5% of commission (`REWARDS_FUND_CONTRIBUTION_BPS`), redemptions draw it
+aside `REWARDS_FUND_CONTRIBUTION_BPS` (5%) of commission, redemptions draw it
 down, and expired points credit it back. It starts empty and will legitimately
-run a small deficit early on, because customers redeem before contributions
+run a deficit early on, because customers redeem before contributions
 accumulate — that is why only a deficit beyond
-`REWARDS_FUND_DEFICIT_TOLERANCE_MINOR` (default JMD 50,000) tightens the safety
-cap. A persistent deficit past that point is the signal to raise the
-contribution rate or lower the caps deliberately, not a bug.
+`REWARDS_FUND_DEFICIT_TOLERANCE_MINOR` (JMD 50,000) tightens the safety cap. A
+persistent deficit past that point is the signal to raise the contribution rate
+or lower the caps deliberately, not a bug.
+
+`GET /v1/admin/revenue` reports commission by category, withdrawal-fee income,
+the points accounts (issued, pending, redeemed, expired) and the outstanding
+points liability.
 
 Two things to take to your accountant before launch:
 
@@ -401,6 +416,11 @@ ledger rather than from a single stored total.
 - [ ] Commission rates in `lib/commission.ts` match your signed provider
       agreements; per-provider overrides set where negotiated.
 - [ ] Accountant has confirmed the points liability treatment (§6b).
+- [ ] `PAYMENT_PROCESSING_BPS` and `PAYMENT_PROCESSING_FIXED_MINOR` match what
+      your gateway actually charges, so the margin guard uses real costs.
+- [ ] `PAYOUT_FLAT_FEE_MINOR` covers what your bank charges per transfer.
+- [ ] A test provider can request a withdrawal and see the fee before
+      confirming; a failed payout returns both the amount and the fee.
 - [ ] Register a real phone number → receive the SMS code.
 - [ ] Place a wallet-funded order end-to-end; confirm cash order too.
 - [ ] Partner dashboard: accept an order, drive it to delivered.
