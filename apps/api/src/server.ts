@@ -1,4 +1,5 @@
 import http from 'node:http';
+import type { TrackingSubjectType, UserRole } from '@prisma/client';
 import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createApp } from './app';
@@ -9,6 +10,9 @@ import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
 import { registerIo } from './lib/realtime';
 import { verifyAccessToken } from './modules/auth/token.service';
+import { canAccessTracking } from './modules/tracking/tracking.service';
+
+const TRACKING_SUBJECTS = new Set(['RIDE', 'ORDER', 'BOOKING', 'RENTAL']);
 
 const app = createApp();
 const server = http.createServer(app);
@@ -60,11 +64,23 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   const userId = socket.data.auth.sub as string;
+  const role = socket.data.auth.role as UserRole;
   socket.join(`user:${userId}`);
 
-  socket.on('track:subscribe', ({ subjectType, subjectId }: { subjectType: string; subjectId: string }) => {
-    if (typeof subjectType === 'string' && typeof subjectId === 'string') {
-      socket.join(`track:${subjectType}:${subjectId}`);
+  socket.on('track:subscribe', async ({ subjectType, subjectId }: { subjectType: string; subjectId: string }) => {
+    // Authorize before joining: live GPS and status events flow to this room,
+    // so a socket may only follow a trip/order it is actually party to.
+    if (typeof subjectType !== 'string' || typeof subjectId !== 'string') return;
+    if (!TRACKING_SUBJECTS.has(subjectType)) return;
+    try {
+      const allowed = await canAccessTracking(userId, role, subjectType as TrackingSubjectType, subjectId);
+      if (allowed) {
+        socket.join(`track:${subjectType}:${subjectId}`);
+      } else {
+        socket.emit('track:error', { subjectType, subjectId, code: 'FORBIDDEN' });
+      }
+    } catch {
+      socket.emit('track:error', { subjectType, subjectId, code: 'FORBIDDEN' });
     }
   });
 

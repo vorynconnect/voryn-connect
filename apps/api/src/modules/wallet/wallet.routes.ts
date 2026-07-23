@@ -83,7 +83,11 @@ walletRouter.post(
 
       const existing = await prisma.payment.findUnique({ where: { idempotencyKey } });
       if (existing) {
-        // Safe retry: return prior outcome without re-charging.
+        // Safe retry: return prior outcome without re-charging. A key that
+        // belongs to another user is a reuse conflict, never their payment.
+        if (existing.userId !== req.auth!.sub) {
+          throw AppError.conflict('This request could not be processed. Please try again.', 'IDEMPOTENCY_CONFLICT');
+        }
         res.json({ payment: existing, retried: true });
         return;
       }

@@ -13,6 +13,16 @@ const MAX_FAILED_LOGINS = 5;
 const LOCKOUT_MINUTES = 15;
 const MAX_OTP_ATTEMPTS = 5;
 
+/**
+ * A throwaway argon2 hash verified when a login names an account that does not
+ * exist, so the response takes the same time as a wrong password on a real
+ * account. Without it, the timing difference leaks whether an account exists.
+ */
+let dummyHashPromise: Promise<string> | null = null;
+function timingEqualizerHash(): Promise<string> {
+  return (dummyHashPromise ??= argon2.hash('voryn-login-timing-equalizer'));
+}
+
 function hashOtp(code: string): string {
   return crypto.createHash('sha256').update(code).digest('hex');
 }
@@ -165,7 +175,12 @@ export const authService = {
     });
     // Same error for unknown account and wrong password — no account enumeration.
     const invalidCreds = AppError.unauthorized('Incorrect email/phone or password.', 'INVALID_CREDENTIALS');
-    if (!user) throw invalidCreds;
+    if (!user) {
+      // Burn the same time a real password check would, so response latency
+      // cannot be used to tell whether the account exists.
+      await argon2.verify(await timingEqualizerHash(), input.password).catch(() => undefined);
+      throw invalidCreds;
+    }
 
     if (user.lockedUntil && user.lockedUntil > new Date()) {
       throw AppError.tooMany(

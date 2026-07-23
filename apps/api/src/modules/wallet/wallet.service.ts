@@ -48,15 +48,22 @@ async function applyEntry(input: LedgerInput) {
 
   return withSerializableRetry(() => prisma.$transaction(
     async (tx) => {
+      const wallet = await tx.wallet.findUnique({ where: { userId: input.userId } });
+      if (!wallet) throw AppError.notFound('Wallet not found');
+
       if (input.idempotencyKey) {
         const existing = await tx.walletTransaction.findUnique({
           where: { idempotencyKey: input.idempotencyKey },
         });
-        if (existing) return existing; // safe retry
+        if (existing) {
+          // Safe retry only when the key belongs to this user's own wallet.
+          if (existing.walletId !== wallet.id) {
+            throw AppError.conflict('This request could not be processed. Please try again.', 'IDEMPOTENCY_CONFLICT');
+          }
+          return existing;
+        }
       }
 
-      const wallet = await tx.wallet.findUnique({ where: { userId: input.userId } });
-      if (!wallet) throw AppError.notFound('Wallet not found');
       if (wallet.status !== 'ACTIVE') {
         throw AppError.forbidden('Your wallet is not active. Contact support.', 'WALLET_INACTIVE');
       }
@@ -208,18 +215,24 @@ export const walletService = {
     }
     return withSerializableRetry(() => prisma.$transaction(
       async (tx) => {
-        if (input.idempotencyKey) {
-          const existing = await tx.walletTransaction.findUnique({
-            where: { idempotencyKey: input.idempotencyKey },
-          });
-          if (existing) return { debit: existing };
-        }
         const [from, to] = await Promise.all([
           tx.wallet.findUnique({ where: { userId: input.fromUserId }, include: { user: true } }),
           tx.wallet.findUnique({ where: { userId: input.toUserId }, include: { user: true } }),
         ]);
         if (!from || from.status !== 'ACTIVE') throw AppError.notFound('Wallet not found');
         if (!to || to.status !== 'ACTIVE') throw AppError.notFound('Recipient wallet not found');
+        if (input.idempotencyKey) {
+          const existing = await tx.walletTransaction.findUnique({
+            where: { idempotencyKey: input.idempotencyKey },
+          });
+          if (existing) {
+            // Safe retry only when the key belongs to the sender's own wallet.
+            if (existing.walletId !== from.id) {
+              throw AppError.conflict('This request could not be processed. Please try again.', 'IDEMPOTENCY_CONFLICT');
+            }
+            return { debit: existing };
+          }
+        }
         if (from.balanceMinor < input.amountMinor) {
           throw AppError.badRequest('Insufficient wallet balance.', 'INSUFFICIENT_FUNDS');
         }

@@ -39,7 +39,14 @@ export async function takePayment(input: {
   if (input.amountMinor <= 0) throw AppError.badRequest('Invalid payment amount.');
 
   const existing = await prisma.payment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
-  if (existing) return existing;
+  if (existing) {
+    // A safe retry returns the prior result; a key that belongs to a different
+    // user is a reuse conflict, never another account's payment.
+    if (existing.userId !== input.userId) {
+      throw AppError.conflict('This request could not be processed. Please try again.', 'IDEMPOTENCY_CONFLICT');
+    }
+    return existing;
+  }
 
   if (input.methodType === PaymentMethodType.VORYN_WALLET) {
     // Debit first — throws INSUFFICIENT_FUNDS before any payment row exists.
