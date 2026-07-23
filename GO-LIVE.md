@@ -148,6 +148,10 @@ If the contact form or login fails with a CORS error, double-check step 3's
 
 - **Security:** the LocationIQ key was shared in chat — rotate it in the
   LocationIQ dashboard before real launch and update it in Render.
+- **Money model:** Voryn takes its cut from providers, never from customers.
+  Confirm the commission rates match your signed provider agreements, and have
+  your accountant confirm the Voryn Points liability treatment, before you take
+  real orders — see LAUNCH.md §6b.
 - **Verification documents** (IDs, registration certificates) are stored in the
   same media bucket as logos/product photos, under unguessable random file
   names. That's acceptable to launch, but plan to move them to a **private**

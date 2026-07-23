@@ -296,9 +296,72 @@ up an empty prod DB:
 npm run prisma:deploy --workspace apps/api   # apply migrations only, no seed data
 ```
 
+## 6b. Money model (commission, payouts, points)
+
+Voryn is **provider-funded**: customers pay for the goods or service, delivery
+or fare, tax and any tip, and nothing else. There is no customer-facing Voryn
+fee anywhere in the app. Platform revenue is the provider commission plus the
+delivery margin.
+
+**Commission rates** are per provider category, defined in
+`apps/api/src/lib/commission.ts`:
+
+| Provider category                    | Rate |
+| ------------------------------------ | ---: |
+| Restaurants                          |  10% |
+| Grocery, pharmacy, convenience, drinks |  7% |
+| Home services, technicians, auto care |  10% |
+| Vehicle rental                       |  10% |
+| Ride drivers (`RIDE_COMMISSION_BPS`) |  12% |
+| Suppliers (B2B)                      |   4% |
+
+A negotiated rate for an individual provider goes in `Provider.commissionBps`
+(basis points, e.g. `850` = 8.5%); it overrides the category default. Whatever
+you agree must match the signed provider agreement, since the commission basis
+is a contractual term.
+
+**Couriers are paid a delivery margin, not a commission.** The customer's
+delivery fee is split into the courier's guaranteed compensation and Voryn's
+margin (`DELIVERY_MARGIN_BPS`, clamped by the min/max vars). Couriers keep
+**100% of tips**, and no commission is ever charged on a tip.
+
+**Provider earnings** land in the `ProviderEarning` ledger as `PENDING`, clear
+to `AVAILABLE` after `EARNINGS_CLEAR_DAYS`, and are what the partner dashboard
+wallet reports. Paying providers out is still a **manual finance step** — there
+is no automated bank transfer; settle weekly against the available balance and
+record a `ProviderPayout` row.
+
+**Voryn Points**: 1 point = JMD 1 of discount, earned at 1 point per JMD 100 of
+eligible items (never on delivery, tax, fees or tips), redeemable for up to 20%
+of an eligible order. Points are **not convertible to cash** — that is
+deliberate, because freely convertible points start to resemble stored monetary
+value, which BOJ treats as a regulated payment activity. Do not enable a
+points-to-cash path without your payment partner and legal adviser.
+
+Two things to take to your accountant before launch:
+
+- **Loyalty liability.** Outstanding points are a future obligation. Under
+  IFRS 15 a material right like this is generally a performance obligation, so
+  part of each sale may need to be deferred until points are redeemed or
+  expire. The data to compute it is in `LoyaltyTransaction` and the
+  `POINTS_EARNED` / `POINTS_REDEEMED` rows of `SettlementRecord`.
+- **Reward cost vs commission.** Voryn funds points by default
+  (`Order.rewardFunding = VORYN_FUNDED`), so a heavily redeemed order can wipe
+  out its own commission. Watch the ratio of `VORYN_FUNDED_DISCOUNT` to
+  `VORYN_COMMISSION` + `VORYN_DELIVERY_MARGIN` once real volume arrives, and
+  move promotions to merchant-funded or shared where a provider has agreed to
+  it in writing. Never charge a merchant for a reward they did not approve.
+
+Every completed transaction writes a full `SettlementRecord` breakdown, so
+refunds, provider statements and revenue reporting all recompute from the
+ledger rather than from a single stored total.
+
 ## 7. Pre-launch verification
 
 - [ ] `NODE_ENV=production` API boots (no guard errors).
+- [ ] Commission rates in `lib/commission.ts` match your signed provider
+      agreements; per-provider overrides set where negotiated.
+- [ ] Accountant has confirmed the points liability treatment (§6b).
 - [ ] Register a real phone number → receive the SMS code.
 - [ ] Place a wallet-funded order end-to-end; confirm cash order too.
 - [ ] Partner dashboard: accept an order, drive it to delivered.
