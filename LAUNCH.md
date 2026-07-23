@@ -300,21 +300,22 @@ npm run prisma:deploy --workspace apps/api   # apply migrations only, no seed da
 
 Voryn is **provider-funded**: customers pay for the goods or service, delivery
 or fare, tax and any tip, and nothing else. There is no customer-facing Voryn
-fee anywhere in the app. Platform revenue is the provider commission plus the
-delivery margin.
+fee anywhere in the app. Platform revenue is the commission Voryn charges each
+provider (couriers and drivers included).
 
 **Commission rates** are per provider category, defined in
-`apps/api/src/lib/commission.ts`:
+`apps/api/src/lib/commission.ts`. Rides and deliveries are charged 9.99%; every
+other provider type is charged 11.99%:
 
 | Provider category                     | Rate |
 | ------------------------------------- | ---: |
-| Restaurants                           |  10% |
-| Grocery, pharmacy, convenience, drinks |   8% |
-| Home services, technicians, auto care |  12% |
-| Vehicle rental                        |  10% |
-| Ride drivers (`RIDE_COMMISSION_BPS`)  |  15% |
-| Delivery couriers (`COURIER_COMMISSION_BPS`) | 12% |
-| Suppliers (B2B)                       |   5% |
+| Ride drivers (`RIDE_COMMISSION_BPS`)  | 9.99% |
+| Delivery couriers (`COURIER_COMMISSION_BPS`) | 9.99% |
+| Restaurants                           | 11.99% |
+| Grocery, pharmacy, convenience, drinks | 11.99% |
+| Home services, technicians, auto care | 11.99% |
+| Vehicle rental                        | 11.99% |
+| Suppliers (B2B)                       | 11.99% |
 
 A negotiated rate for an individual provider goes in `Provider.commissionBps`
 (basis points, e.g. `850` = 8.5%); it overrides the category default. Whatever
@@ -336,6 +337,34 @@ made, so the same earnings can never fund two payouts. A successful payout books
 the fee as revenue; a failed one returns the amount and the fee together. Voryn
 does not operate the transfer rail — settle through a bank or an authorised
 payment service provider.
+
+**Delivery pricing** (`src/lib/pricing.ts`, `modules/orders/delivery-quote.ts`)
+is distance-based on the **actual road route** (merchant branch → drop-off, via
+the maps service, never straight-line). The tiered fee:
+
+| Road distance | Fee |
+| ------------- | --- |
+| 0–3 km        | JMD 500 flat |
+| 3–10 km       | JMD 500 + JMD 100 per additional km |
+| over 10 km    | JMD 1,200 + JMD 130 per additional km |
+
+Fees round **up** to the nearest JMD 50. On top of the distance fee the engine
+applies, in order: a vehicle multiplier (motorcycle 1.00×, car 1.20×, SUV 1.35×,
+van 1.60×), flat package and additional-pickup (JMD 250/extra merchant)
+adjustments, a controlled peak multiplier (`DELIVERY_PEAK_MULTIPLIER_BPS`, capped
+at 1.30×), then any waiting-time fee (first 10 min free, JMD 20/min after, max
+JMD 400). The courier is paid the whole fee less the 9.99% commission, plus 100%
+of tips. Standard radius is `DELIVERY_MAX_KM` (25 km), extended to
+`DELIVERY_EXTENDED_MAX_KM` (35 km); beyond that a drop-off is out of zone.
+
+At checkout the backend **signs and persists** the fee as a `DeliveryQuote`
+(`DELIVERY_QUOTE_TTL_MINUTES`, 10 min; `DELIVERY_PRICING_VERSION` frozen on each
+quote and order). `GET /v1/orders/quote` returns a `deliveryQuoteId`; the app
+passes it back to `POST /v1/orders/checkout`, which locks the fee to the quote so
+the mobile app never computes the final fee itself. A destination change
+(`POST /v1/orders/:id/change-destination`) reprices the leg and adds at least
+JMD 200; cancellation fees follow the stage table (free before a courier commits,
+JMD 150 once accepted, JMD 250 at pickup, full fee once collected).
 
 **Voryn Points**: customers earn 5 points per JMD 100 of eligible items, and
 10 points are worth JMD 1. That reads as a generous "5 points per JMD 100" while

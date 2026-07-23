@@ -40,14 +40,26 @@ function makeFakeProvider() {
     },
     async calculateRoute(from, to) {
       calls.route += 1;
+      // A road distance is longer than the straight line: ~1.3× the haversine,
+      // rounded to 0.1 km. For the PICKUP→DROPOFF pair this yields 6.4 km, the
+      // value the ride-quote tests below pin down.
+      const R = 6371;
+      const rad = (x: number) => (x * Math.PI) / 180;
+      const dLat = rad(to.latitude - from.latitude);
+      const dLng = rad(to.longitude - from.longitude);
+      const h =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(rad(from.latitude)) * Math.cos(rad(to.latitude)) * Math.sin(dLng / 2) ** 2;
+      const straightKm = 2 * R * Math.asin(Math.sqrt(h));
+      const distanceKm = Math.round(straightKm * 1.3 * 10) / 10;
       return {
         coordinates: [
           from,
           { latitude: (from.latitude + to.latitude) / 2, longitude: (from.longitude + to.longitude) / 2 },
           to,
         ],
-        distanceKm: 6.4,
-        durationMinutes: 14,
+        distanceKm,
+        durationMinutes: Math.max(1, Math.round(distanceKm * 2.2)),
       };
     },
   };
@@ -331,6 +343,6 @@ describe('delivery zones', () => {
       { lat: PICKUP.lat + 0.5, lng: PICKUP.lng - 0.5 }, // ~75 km away
     );
     expect(quote.outOfZone).toBe(true);
-    expect(quote.maxDeliveryKm).toBe(env.DELIVERY_MAX_KM);
+    expect(quote.maxDeliveryKm).toBe(env.DELIVERY_EXTENDED_MAX_KM);
   });
 });

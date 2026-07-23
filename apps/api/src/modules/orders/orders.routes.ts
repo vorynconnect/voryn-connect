@@ -6,7 +6,6 @@ import { AppError } from '../../lib/errors';
 import { requireAuth } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { ordersService } from './orders.service';
-import { deliverySplit } from '../../lib/commission';
 import { liveEta } from '../rides/eta.service';
 import { listTrackingEvents } from '../tracking/tracking.service';
 import { simulateOrderFulfillment } from '../simulation/fulfillment.simulator';
@@ -162,6 +161,7 @@ ordersRouter.post(
       tipMinor: z.number().int().min(0).optional(),
       pointsToRedeem: z.number().int().min(0).max(1_000_000).optional(),
       redeemPoints: z.boolean().optional(),
+      deliveryQuoteId: z.string().optional(),
       idempotencyKey: z.string().min(8).max(128),
     }),
   }),
@@ -183,14 +183,35 @@ ordersRouter.get(
   validate({ query: z.object({ addressId: z.string().optional() }) }),
   async (req, res, next) => {
     try {
-      const quote = await ordersService.quote(req.auth!.sub, req.query.addressId as string | undefined);
+      const quote = await ordersService.quote(
+        req.auth!.sub,
+        req.query.addressId as string | undefined,
+        undefined,
+        { persistQuote: true },
+      );
       res.json({
         quote: {
+          // Signed quote the client passes back at checkout to lock this price.
+          deliveryQuoteId: quote.deliveryQuoteId,
+          deliveryQuoteExpiresAt: quote.deliveryQuoteExpiresAt,
+          pricingVersion: quote.pricingVersion,
           addressId: quote.address?.id ?? null,
           merchantName: quote.merchantName,
           distanceKm: quote.distanceKm,
+          routeDistanceMeters: quote.routeDistanceMeters,
+          estimatedDurationSeconds: quote.estimatedDurationSeconds,
           baseFeeMinor: quote.baseFeeMinor,
+          distanceFeeMinor: quote.distanceFeeMinor,
           deliveryFeeMinor: quote.deliveryFeeMinor,
+          // Delivery fee breakdown (spec §18).
+          vehicle: quote.vehicle,
+          vehicleAdjustmentMinor: quote.vehicleAdjustmentMinor,
+          packageClass: quote.packageClass,
+          packageAdjustmentMinor: quote.packageAdjustmentMinor,
+          additionalPickupFeeMinor: quote.additionalPickupFeeMinor,
+          demandMultiplierBps: quote.demandMultiplierBps,
+          demandAdjustmentMinor: quote.demandAdjustmentMinor,
+          waitingFeeMinor: quote.waitingFeeMinor,
           subtotalMinor: quote.subtotalMinor,
           serviceFeeMinor: quote.serviceFeeMinor,
           taxMinor: quote.taxMinor,
@@ -201,7 +222,8 @@ ordersRouter.get(
           outOfZone: quote.outOfZone,
           maxDeliveryKm: quote.maxDeliveryKm,
           // Transparency: the delivery person's guaranteed share of the fee (plus 100% of tips).
-          courierPayMinor: deliverySplit(quote.deliveryFeeMinor).courierCompensationMinor,
+          courierCommissionBps: quote.courierCommissionBps,
+          courierPayMinor: quote.estimatedCourierEarningMinor,
           points: quote.points,
         },
       });
@@ -280,6 +302,28 @@ ordersRouter.post(
     try {
       const order = await ordersService.cancel(req.params.id!, req.auth!.sub, req.body.reason);
       res.json({ order });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * Reprice the delivery for a new drop-off (spec §15). Omit `confirm` to preview
+ * the additional charge; pass `confirm: true` to accept it and move the order.
+ */
+ordersRouter.post(
+  '/:id/change-destination',
+  validate({ body: z.object({ addressId: z.string(), confirm: z.boolean().optional() }) }),
+  async (req, res, next) => {
+    try {
+      const result = await ordersService.changeDestination({
+        orderId: req.params.id!,
+        customerId: req.auth!.sub,
+        addressId: req.body.addressId,
+        confirm: req.body.confirm,
+      });
+      res.json(result);
     } catch (err) {
       next(err);
     }

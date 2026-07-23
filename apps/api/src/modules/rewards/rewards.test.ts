@@ -160,21 +160,22 @@ describe('spec worked examples', () => {
   });
 
   it('prices every provider category at the agreed commission', () => {
-    expect(CATEGORY_COMMISSION_BPS.RESTAURANT).toBe(1000);
-    expect(CATEGORY_COMMISSION_BPS.GROCERY).toBe(800);
-    expect(CATEGORY_COMMISSION_BPS.HOME_SERVICES).toBe(1200);
-    expect(CATEGORY_COMMISSION_BPS.TECHNICIAN).toBe(1200);
-    expect(CATEGORY_COMMISSION_BPS.AUTO_CARE).toBe(1200);
-    expect(CATEGORY_COMMISSION_BPS.VEHICLE_RENTAL).toBe(1000);
-    expect(CATEGORY_COMMISSION_BPS.RIDES).toBe(1500);
-    expect(CATEGORY_COMMISSION_BPS.SUPPLIER).toBe(500);
+    // Rides/deliveries 9.99%; every other provider type 11.99%.
+    expect(CATEGORY_COMMISSION_BPS.RESTAURANT).toBe(1199);
+    expect(CATEGORY_COMMISSION_BPS.GROCERY).toBe(1199);
+    expect(CATEGORY_COMMISSION_BPS.HOME_SERVICES).toBe(1199);
+    expect(CATEGORY_COMMISSION_BPS.TECHNICIAN).toBe(1199);
+    expect(CATEGORY_COMMISSION_BPS.AUTO_CARE).toBe(1199);
+    expect(CATEGORY_COMMISSION_BPS.VEHICLE_RENTAL).toBe(1199);
+    expect(CATEGORY_COMMISSION_BPS.RIDES).toBe(999);
+    expect(CATEGORY_COMMISSION_BPS.SUPPLIER).toBe(1199);
   });
 
-  it('charges couriers 12% of the delivery fee and never touches tips', () => {
-    // JMD 700 delivery fee: Voryn takes JMD 84, the courier keeps JMD 616.
+  it('charges couriers 9.99% of the delivery fee and never touches tips', () => {
+    // JMD 700 delivery fee: Voryn takes ~JMD 70, the courier keeps ~JMD 630.
     expect(deliverySplit(70_000)).toEqual({
-      courierCompensationMinor: 61_600,
-      vorynMarginMinor: 8_400,
+      courierCompensationMinor: 63_007,
+      vorynMarginMinor: 6_993,
     });
   });
 });

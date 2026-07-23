@@ -62,8 +62,19 @@ const envSchema = z.object({
   MAPS_GEOCODER_KEY: z.string().optional().default(''),
   MAPS_ROUTER_KEY: z.string().optional().default(''),
   MAPS_DAILY_CALL_WARNING: z.coerce.number().int().positive().default(5000),
-  // Platform-wide delivery radius cap (km) — orders beyond this are out of zone.
-  DELIVERY_MAX_KM: z.coerce.number().positive().default(15),
+  // Standard delivery radius (km). Drop-offs beyond it but within the extended
+  // radius are still served; beyond the extended radius they are out of zone.
+  DELIVERY_MAX_KM: z.coerce.number().positive().default(25),
+  DELIVERY_EXTENDED_MAX_KM: z.coerce.number().positive().default(35),
+  // Controlled peak-demand multiplier in basis points (10000 = 1.00×, no surge).
+  // Clamped to a maximum of 1.30× by the pricing engine. Raised by ops during
+  // severe conditions; never uncontrolled surge.
+  DELIVERY_PEAK_MULTIPLIER_BPS: z.coerce.number().int().min(10_000).max(13_000).default(10_000),
+  // How long a signed delivery quote is honoured before the customer re-quotes.
+  DELIVERY_QUOTE_TTL_MINUTES: z.coerce.number().int().positive().default(10),
+  // Bumped whenever the delivery pricing model changes, so historical orders
+  // keep the fee they were quoted under. Stored on every delivery quote.
+  DELIVERY_PRICING_VERSION: z.coerce.number().int().positive().default(1),
   // Ride quotes are honoured for this long before the customer must re-quote.
   RIDE_QUOTE_TTL_MINUTES: z.coerce.number().int().positive().default(10),
   // Driver search: comma-separated expanding radius stages (km), how long each
@@ -84,10 +95,10 @@ const envSchema = z.object({
   // many days; the weekly payout run pays available balances.
   EARNINGS_CLEAR_DAYS: z.coerce.number().int().min(0).default(2),
   // Couriers pay a commission on the delivery fee, like every other provider
-  // type. Tips are never commissioned.
-  COURIER_COMMISSION_BPS: z.coerce.number().int().min(0).max(5000).default(1200),
+  // type. Tips are never commissioned. Delivery + rides = 9.99%.
+  COURIER_COMMISSION_BPS: z.coerce.number().int().min(0).max(5000).default(999),
   // Ride drivers pay a percentage commission on the fare (never on tips).
-  RIDE_COMMISSION_BPS: z.coerce.number().int().min(0).max(5000).default(1500),
+  RIDE_COMMISSION_BPS: z.coerce.number().int().min(0).max(5000).default(999),
   // The rewards fund is a provision, not a gate: it legitimately runs a small
   // deficit early on, because customers redeem before contributions accumulate.
   // Only a deficit past this tolerance tightens the redemption safety cap.

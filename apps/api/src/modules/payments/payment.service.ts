@@ -103,17 +103,22 @@ export async function takePayment(input: {
 }
 
 /** Refund a captured payment; wallet payments are refunded to the wallet. */
-export async function refundPayment(paymentId: string, reason: string) {
+export async function refundPayment(paymentId: string, reason: string, amountMinor?: number) {
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
   if (!payment) throw AppError.notFound('Payment not found');
   if (payment.status !== PaymentStatus.CAPTURED) {
     throw AppError.badRequest('Only captured payments can be refunded.');
   }
 
-  if (payment.methodType === PaymentMethodType.VORYN_WALLET) {
+  // Full refund by default; a smaller amount leaves a retained charge (e.g. a
+  // cancellation fee) on the captured payment, which stays PARTIALLY_REFUNDED.
+  const refundMinor = Math.min(payment.amountMinor, Math.max(0, amountMinor ?? payment.amountMinor));
+  const isPartial = refundMinor < payment.amountMinor;
+
+  if (refundMinor > 0 && payment.methodType === PaymentMethodType.VORYN_WALLET) {
     await walletService.credit({
       userId: payment.userId,
-      amountMinor: payment.amountMinor,
+      amountMinor: refundMinor,
       type: 'REFUND',
       description: `Refund: ${reason}`,
       referenceType: payment.referenceType,
@@ -124,9 +129,12 @@ export async function refundPayment(paymentId: string, reason: string) {
 
   const [refund] = await prisma.$transaction([
     prisma.refund.create({
-      data: { paymentId: payment.id, amountMinor: payment.amountMinor, reason, status: 'PROCESSED', processedAt: new Date() },
+      data: { paymentId: payment.id, amountMinor: refundMinor, reason, status: 'PROCESSED', processedAt: new Date() },
     }),
-    prisma.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.REFUNDED } }),
+    prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: isPartial ? PaymentStatus.PARTIALLY_REFUNDED : PaymentStatus.REFUNDED },
+    }),
   ]);
   return refund;
 }

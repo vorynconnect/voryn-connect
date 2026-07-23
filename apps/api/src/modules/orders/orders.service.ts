@@ -1,5 +1,6 @@
 import { OrderStatus, PaymentMethodType, PromotionType, WalletEntryType } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
+import { env } from '../../config/env';
 import { AppError } from '../../lib/errors';
 import { orderCode } from '../../lib/codes';
 import { percentOfMinor } from '../../lib/money';
@@ -18,7 +19,13 @@ import {
   spendPoints,
   voidPendingPoints,
 } from '../rewards/rewards.service';
-import { OUT_OF_ZONE_MESSAGE, deliveryQuote } from './delivery-quote';
+import {
+  OUT_OF_ZONE_MESSAGE,
+  consumeDeliveryQuote,
+  deliveryQuote,
+  persistDeliveryQuote,
+} from './delivery-quote';
+import { MIN_DESTINATION_CHANGE_MINOR, cancellationFeeMinor } from '../../lib/pricing';
 
 // Provider-funded commission model: customers pay no Voryn platform fee.
 // Voryn's revenue comes from the merchant commission and delivery margin.
@@ -34,7 +41,12 @@ export const ordersService = {
    * Prices the active cart for a delivery address. Checkout runs the same
    * math, so what the customer sees here is exactly what they are charged.
    */
-  async quote(customerId: string, addressId?: string, paymentMethod?: PaymentMethodType) {
+  async quote(
+    customerId: string,
+    addressId?: string,
+    paymentMethod?: PaymentMethodType,
+    opts?: { persistQuote?: boolean },
+  ) {
     const cart = await prisma.cart.findFirst({
       where: { customerId, isActive: true },
       include: { items: true, promoCode: true },
@@ -93,6 +105,19 @@ export const ordersService = {
       customerPaidMinor: totalBeforeTipMinor,
     });
 
+    // For the public quote endpoint, sign and persist the delivery fee so the
+    // customer can confirm this exact price at checkout (spec §14). Skipped when
+    // checkout calls quote() internally — it consumes the quote it was handed.
+    let deliveryQuoteId: string | null = null;
+    let deliveryQuoteExpiresAt: Date | null = null;
+    if (opts?.persistQuote && address && !trip.outOfZone) {
+      const row = await persistDeliveryQuote(customerId, trip);
+      if (row) {
+        deliveryQuoteId = row.id;
+        deliveryQuoteExpiresAt = row.expiresAt;
+      }
+    }
+
     return {
       cart,
       address,
@@ -104,6 +129,9 @@ export const ordersService = {
       totalBeforeTipMinor,
       provider,
       points,
+      deliveryQuoteId,
+      deliveryQuoteExpiresAt,
+      pricingVersion: env.DELIVERY_PRICING_VERSION,
     };
   },
 
@@ -116,12 +144,55 @@ export const ordersService = {
     pointsToRedeem?: number;
     /** Legacy toggle from older app builds: redeem the maximum allowed. */
     redeemPoints?: boolean;
+    /** Signed delivery quote to lock the fee to (spec §14). Optional (legacy). */
+    deliveryQuoteId?: string;
     idempotencyKey: string;
   }) {
     const quote = await this.quote(input.customerId, input.addressId, input.paymentMethodType);
-    const { cart, address, providerId, merchantName, deliveryFeeMinor, distanceKm } = quote;
+    const { cart, address, providerId, merchantName } = quote;
     if (!address) throw AppError.notFound('Delivery address not found');
     if (quote.outOfZone) throw AppError.badRequest(OUT_OF_ZONE_MESSAGE, 'OUT_OF_DELIVERY_ZONE');
+
+    // Delivery fee: lock it to the signed quote the customer confirmed when one
+    // is supplied; otherwise fall back to the freshly computed live fee.
+    let deliveryFeeMinor = quote.deliveryFeeMinor;
+    let distanceKm: number | null = quote.distanceKm;
+    let deliveryQuoteId: string | null = null;
+    const delivery = {
+      vehicle: quote.vehicle as string,
+      packageClass: quote.packageClass as string,
+      vehicleAdjustmentMinor: quote.vehicleAdjustmentMinor,
+      packageAdjustmentMinor: quote.packageAdjustmentMinor,
+      additionalPickupFeeMinor: quote.additionalPickupFeeMinor,
+      demandMultiplierBps: quote.demandMultiplierBps,
+      demandAdjustmentMinor: quote.demandAdjustmentMinor,
+      waitingFeeMinor: quote.waitingFeeMinor,
+      routeDistanceMeters: quote.routeDistanceMeters,
+      estimatedDurationSeconds: quote.estimatedDurationSeconds,
+      pricingVersion: quote.pricingVersion,
+    };
+    if (input.deliveryQuoteId) {
+      const locked = await consumeDeliveryQuote({
+        quoteId: input.deliveryQuoteId,
+        customerId: input.customerId,
+        providerId,
+        dropoff: { lat: address.latitude, lng: address.longitude },
+      });
+      deliveryQuoteId = locked.id;
+      deliveryFeeMinor = locked.finalDeliveryFeeMinor;
+      distanceKm = locked.distanceKm;
+      delivery.vehicle = locked.vehicle;
+      delivery.packageClass = locked.packageClass;
+      delivery.vehicleAdjustmentMinor = locked.vehicleAdjustmentMinor;
+      delivery.packageAdjustmentMinor = locked.packageAdjustmentMinor;
+      delivery.additionalPickupFeeMinor = locked.additionalPickupFeeMinor;
+      delivery.demandMultiplierBps = locked.demandMultiplierBps;
+      delivery.demandAdjustmentMinor = locked.demandAdjustmentMinor;
+      delivery.waitingFeeMinor = locked.estimatedWaitingFeeMinor;
+      delivery.routeDistanceMeters = locked.routeDistanceMeters;
+      delivery.estimatedDurationSeconds = locked.estimatedDurationSeconds;
+      delivery.pricingVersion = locked.pricingVersion;
+    }
     // Discovery hides unverified providers and B2B suppliers; this backstops
     // direct-ID checkouts.
     const providerRow = await prisma.provider.findUnique({
@@ -164,6 +235,8 @@ export const ordersService = {
         deliveryLng: address.longitude,
         deliveryInstructions: address.instructions,
         distanceKm,
+        routeDistanceMeters: delivery.routeDistanceMeters,
+        estimatedDurationSeconds: delivery.estimatedDurationSeconds,
         subtotalMinor,
         deliveryFeeMinor,
         serviceFeeMinor: SERVICE_FEE_MINOR,
@@ -171,6 +244,16 @@ export const ordersService = {
         discountMinor,
         tipMinor,
         totalMinor,
+        deliveryVehicle: delivery.vehicle,
+        deliveryPackageClass: delivery.packageClass,
+        vehicleAdjustmentMinor: delivery.vehicleAdjustmentMinor,
+        packageAdjustmentMinor: delivery.packageAdjustmentMinor,
+        additionalPickupFeeMinor: delivery.additionalPickupFeeMinor,
+        demandMultiplierBps: delivery.demandMultiplierBps,
+        demandAdjustmentMinor: delivery.demandAdjustmentMinor,
+        waitingFeeMinor: delivery.waitingFeeMinor,
+        deliveryQuoteId,
+        deliveryPricingVersion: delivery.pricingVersion,
         pointsRedeemed,
         pointsDiscountMinor,
         promoCodeId: cart.promoCodeId,
@@ -396,24 +479,54 @@ export const ordersService = {
   },
 
   async cancel(orderId: string, customerId: string, reason: string) {
-    const order = await prisma.order.findFirst({ where: { id: orderId, customerId } });
+    const order = await prisma.order.findFirst({
+      where: { id: orderId, customerId },
+      include: { courier: { select: { user: { select: { id: true } } } } },
+    });
     if (!order) throw AppError.notFound('Order not found');
-    const cancellable: OrderStatus[] = [
+    // Cancellation stage → fee (spec §16). Free while no courier is committed;
+    // once a courier has accepted, a fee compensates them for wasted travel.
+    // After collection it is no longer a self-service cancel (support review).
+    const freeStages: OrderStatus[] = [
       OrderStatus.PENDING_PAYMENT,
       OrderStatus.PLACED,
       OrderStatus.CONFIRMED,
       OrderStatus.PREPARING,
+      OrderStatus.READY_FOR_PICKUP,
     ];
+    const cancellable: OrderStatus[] = [...freeStages, OrderStatus.COURIER_ASSIGNED];
     if (!cancellable.includes(order.status)) {
-      throw AppError.badRequest('This order can no longer be cancelled.', 'NOT_CANCELLABLE');
+      throw AppError.badRequest(
+        'This order can no longer be cancelled here. Contact support.',
+        'NOT_CANCELLABLE',
+      );
     }
+
+    const stage =
+      order.status === OrderStatus.COURIER_ASSIGNED ? 'COURIER_EN_ROUTE' : 'BEFORE_COURIER';
+    // The fee can never exceed what the customer actually paid.
+    const rawFeeMinor = cancellationFeeMinor(stage, order.deliveryFeeMinor);
+    const cancelFeeMinor = Math.min(rawFeeMinor, order.totalMinor);
 
     const updated = await prisma.order.update({
       where: { id: order.id },
       data: { status: OrderStatus.CANCELLED_BY_CUSTOMER, cancelReason: reason },
     });
     if (order.paymentId) {
-      await refundPayment(order.paymentId, `Order ${order.code} cancelled`);
+      const refundMinor = Math.max(0, order.totalMinor - cancelFeeMinor);
+      await refundPayment(order.paymentId, `Order ${order.code} cancelled`, refundMinor);
+      // The retained fee compensates the courier for the trip already started.
+      if (cancelFeeMinor > 0 && order.courier?.user.id) {
+        await walletService.credit({
+          userId: order.courier.user.id,
+          amountMinor: cancelFeeMinor,
+          type: WalletEntryType.PAYOUT,
+          description: `Cancellation compensation • ${order.code}`,
+          referenceType: 'delivery',
+          referenceId: order.id,
+          idempotencyKey: `cancel-fee:delivery:${order.id}`,
+        });
+      }
     }
     // A fully cancelled order gives back the points it spent, and takes back
     // any it awarded (rare: cancelling after delivery), which may leave the
@@ -462,5 +575,119 @@ export const ordersService = {
       `Order ${order.code} was cancelled by the customer${order.status === OrderStatus.PREPARING ? ' while preparing' : ''}. Stop preparing it.`,
     );
     return updated;
+  },
+
+  /**
+   * Destination change after checkout (spec §15). Reprices the delivery leg for
+   * the new drop-off and returns the additional charge, which is never less
+   * than JMD 200 for an approved change. With `confirm: false` this only quotes
+   * the change; with `confirm: true` it charges the delta and moves the order.
+   * The customer must approve before the courier continues.
+   */
+  async changeDestination(input: {
+    orderId: string;
+    customerId: string;
+    addressId: string;
+    confirm?: boolean;
+  }) {
+    const order = await prisma.order.findFirst({
+      where: { id: input.orderId, customerId: input.customerId },
+      include: {
+        courier: { select: { user: { select: { id: true } } } },
+        payment: { select: { methodType: true } },
+        provider: { select: { name: true } },
+      },
+    });
+    if (!order) throw AppError.notFound('Order not found');
+    const changeable: OrderStatus[] = [
+      OrderStatus.PLACED,
+      OrderStatus.CONFIRMED,
+      OrderStatus.PREPARING,
+      OrderStatus.READY_FOR_PICKUP,
+      OrderStatus.COURIER_ASSIGNED,
+      OrderStatus.PICKED_UP,
+      OrderStatus.ON_THE_WAY,
+    ];
+    if (!changeable.includes(order.status)) {
+      throw AppError.badRequest('The destination can no longer be changed.', 'NOT_CHANGEABLE');
+    }
+
+    const address = await prisma.address.findFirst({
+      where: { id: input.addressId, userId: input.customerId },
+    });
+    if (!address) throw AppError.notFound('Delivery address not found');
+
+    const requote = await deliveryQuote(
+      { restaurantId: order.restaurantId, storeId: order.storeId },
+      { lat: address.latitude, lng: address.longitude },
+      { vehicle: (order.deliveryVehicle as never) ?? undefined },
+    );
+    if (requote.outOfZone) throw AppError.badRequest(OUT_OF_ZONE_MESSAGE, 'OUT_OF_DELIVERY_ZONE');
+
+    const oldFeeMinor = order.deliveryFeeMinor;
+    const newFeeMinor = requote.deliveryFeeMinor;
+    // An approved change always adds at least the destination-change floor.
+    const additionalMinor = Math.max(newFeeMinor - oldFeeMinor, MIN_DESTINATION_CHANGE_MINOR);
+
+    const preview = {
+      orderId: order.id,
+      code: order.code,
+      oldFeeMinor,
+      newFeeMinor,
+      additionalMinor,
+      newDistanceKm: requote.distanceKm,
+      addressName: `${address.name} • ${address.line1}`,
+    };
+    if (!input.confirm) return { ...preview, confirmed: false };
+
+    if (order.paymentId && additionalMinor > 0) {
+      await takePayment({
+        userId: input.customerId,
+        methodType: order.payment?.methodType ?? PaymentMethodType.VORYN_WALLET,
+        amountMinor: additionalMinor,
+        referenceType: 'order',
+        referenceId: order.id,
+        description: `Destination change • ${order.code}`,
+        counterpartyName: order.provider?.name ?? 'Voryn',
+        idempotencyKey: `dest-change:${order.id}:${address.id}`,
+      });
+    }
+
+    // The revised fee = old fee + the approved additional charge, so the courier
+    // is paid for the extra distance.
+    const revisedFeeMinor = oldFeeMinor + additionalMinor;
+    const updated = await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        deliveryAddressName: preview.addressName,
+        deliveryLat: address.latitude,
+        deliveryLng: address.longitude,
+        deliveryInstructions: address.instructions,
+        distanceKm: requote.distanceKm,
+        routeDistanceMeters: requote.routeDistanceMeters,
+        estimatedDurationSeconds: requote.estimatedDurationSeconds,
+        deliveryFeeMinor: revisedFeeMinor,
+        totalMinor: { increment: additionalMinor },
+      },
+    });
+
+    await recordTrackingEvent({
+      subjectType: 'ORDER',
+      subjectId: order.id,
+      status: order.status,
+      label: 'Delivery address changed',
+      metadata: { additionalMinor, newDistanceKm: requote.distanceKm },
+    });
+    if (order.courier?.user.id) {
+      await prisma.notification.create({
+        data: {
+          userId: order.courier.user.id,
+          type: 'ORDER_UPDATE',
+          title: 'Delivery address changed',
+          body: `The drop-off for ${order.code} was updated. Follow the new destination in the app.`,
+        },
+      });
+    }
+    return { ...preview, confirmed: true, order: updated };
   },
 };

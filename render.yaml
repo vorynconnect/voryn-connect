@@ -112,20 +112,32 @@ services:
       - key: BOOTSTRAP_ADMIN_PASSWORD
         sync: false               # min 8 chars; only used if the account doesn't exist yet
       # ── Marketplace tuning (defaults exist; pinned here for visibility) ──
+      # Standard delivery radius (km); extended radius still serves.
       - key: DELIVERY_MAX_KM
-        value: "15"
+        value: "25"
+      - key: DELIVERY_EXTENDED_MAX_KM
+        value: "35"
+      # Controlled peak multiplier in bps (10000 = 1.00x; engine caps at 13000).
+      - key: DELIVERY_PEAK_MULTIPLIER_BPS
+        value: "10000"
+      # Signed delivery quotes stay bookable for this many minutes.
+      - key: DELIVERY_QUOTE_TTL_MINUTES
+        value: "10"
+      # Bumped whenever the delivery pricing model changes.
+      - key: DELIVERY_PRICING_VERSION
+        value: "1"
       # ── Money model: provider-funded commission + rewards engine ──
       # Per-category commission rates live in src/lib/commission.ts; these are
       # the platform-wide knobs. Days before a provider's earnings clear:
       - key: EARNINGS_CLEAR_DAYS
         value: "2"
       # Couriers pay commission on the delivery fee like any other provider
-      # (1200 = 12%). Tips are never commissioned.
+      # (999 = 9.99%). Tips are never commissioned.
       - key: COURIER_COMMISSION_BPS
-        value: "1200"
-      # Commission on a ride fare (1500 = 15%). Never applied to tips.
+        value: "999"
+      # Commission on a ride fare (999 = 9.99%). Never applied to tips.
       - key: RIDE_COMMISSION_BPS
-        value: "1500"
+        value: "999"
       # Direct costs netted off commission before any points discount is
       # allowed, plus the minimum profit Voryn keeps on every order.
       - key: PAYMENT_PROCESSING_BPS

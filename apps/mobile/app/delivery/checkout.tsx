@@ -17,10 +17,15 @@ type Address = { id: string; name: string; line1: string; instructions: string |
 
 type DeliveryQuote = {
   quote: {
+    // Signed quote id — passed back at checkout so the fee the customer
+    // confirmed is exactly the fee charged (the app never recomputes it).
+    deliveryQuoteId: string | null;
+    deliveryQuoteExpiresAt: string | null;
     addressId: string | null;
     merchantName: string;
     distanceKm: number | null;
     baseFeeMinor: number;
+    distanceFeeMinor: number;
     deliveryFeeMinor: number;
     subtotalMinor: number;
     serviceFeeMinor: number;
@@ -130,6 +135,7 @@ export default function CheckoutScreen() {
           paymentMethodType: payment,
           tipMinor,
           pointsToRedeem: redeemPoints ? redeemablePoints : 0,
+          deliveryQuoteId: quote?.deliveryQuoteId ?? undefined,
           idempotencyKey,
         },
       });
@@ -140,7 +146,14 @@ export default function CheckoutScreen() {
       ]);
       router.replace({ pathname: '/delivery/tracking/[orderId]', params: { orderId: result.order.id } });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not place your order.');
+      // The signed fee is only good for ~10 minutes; if it lapsed, refresh the
+      // quote so the customer confirms the current price.
+      if (err instanceof ApiError && err.code === 'QUOTE_EXPIRED') {
+        await quoteQuery.refetch();
+        setError('The delivery price was refreshed. Please review and place your order again.');
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Could not place your order.');
+      }
     } finally {
       setSubmitting(false);
     }

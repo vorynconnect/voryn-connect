@@ -439,6 +439,7 @@ model User {
   promoRedemptions  PromoRedemption[]
   payments          Payment[]
   rideQuotes        RideQuote[]
+  deliveryQuotes    DeliveryQuote[]
 }
 
 model CustomerProfile {
@@ -1141,6 +1142,49 @@ model RideQuote {
   @@index([customerId, createdAt])
 }
 
+// Server-authoritative delivery quote (spec §18). Checkout locks the delivery
+// fee to a quote id, so the fee the customer confirmed is exactly the fee
+// stored — the mobile app never computes the final fee itself. Held for
+// DELIVERY_QUOTE_TTL_MINUTES, then the customer must re-quote.
+model DeliveryQuote {
+  id                       String   @id @default(cuid())
+  customerId               String
+  customer                 User     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  providerId               String
+  merchantName             String
+  pickupLat                Float
+  pickupLng                Float
+  dropoffLat               Float
+  dropoffLng               Float
+  routeDistanceMeters      Int
+  estimatedDurationSeconds Int
+  distanceKm               Float
+  vehicle                  String   @default("MOTORCYCLE")
+  packageClass             String   @default("SMALL")
+  merchantCount            Int      @default(1)
+  baseFeeMinor             Int
+  distanceFeeMinor         Int
+  vehicleAdjustmentMinor   Int      @default(0)
+  packageAdjustmentMinor   Int      @default(0)
+  additionalPickupFeeMinor Int      @default(0)
+  demandMultiplierBps      Int      @default(10000)
+  demandAdjustmentMinor    Int      @default(0)
+  estimatedWaitingFeeMinor Int      @default(0)
+  discountMinor            Int      @default(0)
+  finalDeliveryFeeMinor    Int
+  courierCommissionBps     Int
+  estimatedCourierEarningMinor Int
+  currency                 String   @default("JMD")
+  pricingVersion           Int
+  expiresAt                DateTime
+  usedAt                   DateTime?
+  createdAt                DateTime @default(now())
+
+  orders Order[]
+
+  @@index([customerId, createdAt])
+}
+
 model RideOffer {
   id        String          @id @default(cuid())
   requestId String
@@ -1273,14 +1317,28 @@ model Order {
   deliveryLat Float?
   deliveryLng Float?
   deliveryInstructions String?
-  distanceKm  Float? // merchant → drop-off; drives the delivery fee & courier pay
+  distanceKm  Float? // road distance merchant → drop-off; drives the delivery fee & courier pay
+  routeDistanceMeters Int? // exact road distance from the maps provider
+  estimatedDurationSeconds Int? // road travel time from the maps provider
   subtotalMinor    Int    @default(0)
-  deliveryFeeMinor Int    @default(0)
+  deliveryFeeMinor Int    @default(0) // final fee: distance + vehicle + package + pickup + peak + waiting
   serviceFeeMinor  Int    @default(0)
   taxMinor         Int    @default(0)
   discountMinor    Int    @default(0) // promo-code discount only; points discount is tracked separately
   tipMinor         Int    @default(0)
   totalMinor       Int    @default(0)
+  // Delivery fee breakdown (spec §18), frozen at checkout for the receipt.
+  deliveryVehicle          String? // MOTORCYCLE | CAR | SUV | VAN
+  deliveryPackageClass     String? // SMALL | MEDIUM | LARGE | OVERSIZED
+  vehicleAdjustmentMinor   Int @default(0)
+  packageAdjustmentMinor   Int @default(0)
+  additionalPickupFeeMinor Int @default(0)
+  demandMultiplierBps      Int @default(10000)
+  demandAdjustmentMinor    Int @default(0)
+  waitingFeeMinor          Int @default(0)
+  deliveryQuoteId          String?
+  deliveryQuote            DeliveryQuote? @relation(fields: [deliveryQuoteId], references: [id], onDelete: SetNull)
+  deliveryPricingVersion   Int?
   pointsRedeemed      Int @default(0)
   pointsDiscountMinor Int @default(0)
   pointsEarned        Int @default(0) // credited at delivery, recorded here for refund reversal
