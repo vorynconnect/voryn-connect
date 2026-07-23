@@ -14,7 +14,7 @@ import {
   deliverySplit,
   rideDriverEarningsMinor,
 } from '../../lib/commission';
-import { maxRedeemablePoints, pointsEarnedFor } from '../../lib/loyalty';
+import { computePointsEarned, computeRedemptionCap } from '../../lib/loyalty';
 
 const app = createApp();
 const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -172,10 +172,10 @@ describe('commission and split math', () => {
     expect(rideDriverEarningsMinor(100000)).toBe(88000);
   });
 
-  it('caps redemption at 20% of the eligible amount', () => {
-    expect(maxRedeemablePoints(400000, 1000)).toBe(800); // 20% of JMD 4,000
-    expect(maxRedeemablePoints(400000, 300)).toBe(300); // balance is the binding cap
-    expect(pointsEarnedFor(370000)).toBe(37); // 1 pt per JMD 100
+  it('earns 1 point per JMD 100 at the restaurant rate', () => {
+    expect(
+      computePointsEarned({ eligibleMinor: 370000, category: 'RESTAURANT', tier: 'BRONZE' }),
+    ).toBe(37);
   });
 });
 
@@ -186,11 +186,16 @@ describe('order checkout with points', () => {
     await seedCart();
     const quote = await request(app).get(`/v1/orders/quote?addressId=${addressId}`).set(auth()).expect(200);
     expect(quote.body.quote.serviceFeeMinor).toBe(0); // no customer platform fee
-    expect(quote.body.quote.points).toEqual({
-      balance: 1000,
-      maxRedeemable: 800,
-      valueMinor: 100,
-      maxPercent: 20,
+    // Balance is 1,000 pts and 20% of the JMD 4,250 base would be 850, but
+    // Voryn only expects JMD 400 of commission here, so the safety cap holds
+    // redemption to 80% of that: JMD 320.
+    expect(quote.body.quote.points).toMatchObject({
+      pointsBalance: 1000,
+      maxPoints: 320,
+      maxMinor: 32000,
+      limitedBy: 'COMMISSION_SAFETY',
+      pointValueMinor: 100,
+      tier: 'BRONZE',
     });
 
     const before = await walletBalance(customerId);
@@ -294,8 +299,9 @@ describe('order checkout with points', () => {
     expect((await walletBalance(customerId)) - before).toBe(res.body.order.totalMinor); // money back
   });
 
-  it('caps a greedy redemption request at 20% of the eligible amount', async () => {
+  it('refuses to discount an order below its own commission', async () => {
     await seedCart();
+    const before = await pointsBalance(customerId);
     const res = await request(app)
       .post('/v1/orders/checkout')
       .set(auth())
@@ -306,9 +312,17 @@ describe('order checkout with points', () => {
         idempotencyKey: `settle-co-3-${stamp}`,
       })
       .expect(201);
-    // Balance 737, 20% cap 800 → redeems 737, never over-spends.
-    expect(res.body.order.pointsRedeemed).toBe(737);
-    expect(await pointsBalance(customerId)).toBe(0);
+
+    // The customer asked to spend everything. Voryn expects JMD 400 of
+    // commission on this order, so at most JMD 320 (80%) may be given back —
+    // the order stays profitable no matter what the client sends.
+    expect(res.body.order.pointsRedeemed).toBe(320);
+    expect(res.body.order.pointsDiscountMinor).toBe(32000);
+    expect(await pointsBalance(customerId)).toBe(before - 320);
+
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: res.body.order.id } });
+    const commissionMinor = Math.round(order.subtotalMinor * 0.1);
+    expect(order.pointsDiscountMinor).toBeLessThan(commissionMinor);
   });
 });
 

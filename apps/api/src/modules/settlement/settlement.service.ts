@@ -6,7 +6,8 @@ import {
   commissionOfMinor,
   deliverySplit,
 } from '../../lib/commission';
-import { POINT_VALUE_MINOR, pointsEarnedFor } from '../../lib/loyalty';
+import { POINT_VALUE_MINOR } from '../../lib/loyalty';
+import { awardPoints, rewardsFund } from '../rewards/rewards.service';
 import { walletService } from '../wallet/wallet.service';
 
 /**
@@ -63,6 +64,14 @@ async function createEarning(input: {
         netMinor: input.grossMinor - commissionMinor,
         availableAt: clearanceDate(),
       },
+    });
+    // Set aside a slice of the commission to finance future redemptions, so
+    // rewards are paid from a provision rather than from operating cash.
+    await rewardsFund.contributeFromCommission({
+      commissionMinor,
+      referenceType: input.referenceType,
+      referenceId: input.referenceId,
+      code: input.code,
     });
     return true;
   } catch (err) {
@@ -123,31 +132,34 @@ export const settlementService = {
       }
     }
 
-    // Customer points: earned on the eligible amount actually paid for items.
+    // Customer points: earned on the eligible amount actually paid for items,
+    // at the category rate, scaled by tier and any live campaign.
     const eligibleMinor = Math.max(
       0,
       order.subtotalMinor - order.discountMinor - order.pointsDiscountMinor,
     );
-    const pointsEarned = pointsEarnedFor(eligibleMinor);
-    if (pointsEarned > 0 && order.pointsEarned === 0) {
+    let pointsEarned = 0;
+    if (eligibleMinor > 0 && order.pointsEarned === 0) {
       await ensureWalletAndLoyalty(order.customerId);
-      await prisma.$transaction([
-        prisma.loyaltyAccount.update({
-          where: { userId: order.customerId },
-          data: { pointsBalance: { increment: pointsEarned } },
-        }),
-        prisma.loyaltyTransaction.create({
-          data: {
-            account: { connect: { userId: order.customerId } },
-            type: 'EARN',
-            points: pointsEarned,
-            description: `Earned on order ${order.code}`,
-            referenceType: 'order',
-            referenceId: order.id,
-          },
-        }),
-        prisma.order.update({ where: { id: order.id }, data: { pointsEarned } }),
-      ]);
+      const priorOrders = await prisma.order.count({
+        where: {
+          customerId: order.customerId,
+          status: { in: ['DELIVERED', 'COMPLETED'] },
+          id: { not: order.id },
+        },
+      });
+      pointsEarned = await awardPoints({
+        userId: order.customerId,
+        eligibleMinor,
+        category: order.provider.categories[0] ?? 'RESTAURANT',
+        referenceType: 'order',
+        referenceId: order.id,
+        code: order.code,
+        isFirstOrder: priorOrders === 0,
+      });
+      if (pointsEarned > 0) {
+        await prisma.order.update({ where: { id: order.id }, data: { pointsEarned } });
+      }
     }
 
     const commissionMinor = commissionOfMinor(basisMinor, bps);

@@ -32,7 +32,19 @@ type DeliveryQuote = {
     outOfZone: boolean;
     maxDeliveryKm: number;
     courierPayMinor: number;
-    points: { balance: number; maxRedeemable: number; valueMinor: number; maxPercent: number };
+    points: {
+      pointsBalance: number;
+      maxPoints: number;
+      maxMinor: number;
+      pointValueMinor: number;
+      maxPercent: number;
+      minOrderMinor: number;
+      /** Which rule held the redemption down, so we can explain it. */
+      limitedBy: string;
+      reason: string;
+      tier: string;
+      earnRateLabel: string;
+    };
   };
 };
 
@@ -85,11 +97,11 @@ export default function CheckoutScreen() {
 
   const walletBalance = walletQuery.data?.wallet.balanceMinor ?? 0;
   const quote = quoteQuery.data?.quote;
-  // Server-computed cap: 1 pt = JMD 1, up to 20% of the eligible item amount.
-  const points = quote?.points.balance ?? walletQuery.data?.loyalty.pointsBalance ?? 0;
-  const redeemablePoints = quote?.points.maxRedeemable ?? 0;
-  const pointsDiscountMinor =
-    redeemPoints && quote ? redeemablePoints * quote.points.valueMinor : 0;
+  // The rewards engine decides the cap for this specific order and tells us
+  // which rule bound it, so we can say why rather than silently offering less.
+  const points = quote?.points.pointsBalance ?? walletQuery.data?.loyalty.pointsBalance ?? 0;
+  const redeemablePoints = quote?.points.maxPoints ?? 0;
+  const pointsDiscountMinor = redeemPoints ? (quote?.points.maxMinor ?? 0) : 0;
   const totalMinor = quote ? Math.max(0, quote.totalBeforeTipMinor - pointsDiscountMinor) + tipMinor : null;
 
   const placeOrder = async () => {
@@ -247,9 +259,12 @@ export default function CheckoutScreen() {
               <Text style={styles.paymentTitle}>Redeem points</Text>
               <Text style={styles.paymentBody}>
                 {redeemablePoints > 0
-                  ? `You have ${points.toLocaleString()} points. Save ${formatJmd(redeemablePoints * (quote?.points.valueMinor ?? 100))} on this order.`
-                  : `You have ${points.toLocaleString()} points. Redeem up to ${quote?.points.maxPercent ?? 20}% of eligible orders.`}
+                  ? `You have ${points.toLocaleString()} points. Save ${formatJmd(quote?.points.maxMinor ?? 0)} on this order.`
+                  : `You have ${points.toLocaleString()} points.`}
               </Text>
+              {quote?.points.reason && quote.points.limitedBy !== 'BALANCE' ? (
+                <Text style={styles.pointsNote}>{quote.points.reason}</Text>
+              ) : null}
             </View>
             <Switch
               value={redeemPoints}
@@ -435,6 +450,7 @@ const styles = StyleSheet.create({
   },
   paymentTitle: { fontSize: fontSize.base, fontWeight: fontWeight.bold, color: colors.textPrimary },
   paymentBody: { fontSize: fontSize.sm, color: colors.textSecondary, marginTop: 1 },
+  pointsNote: { fontSize: fontSize.xs, color: colors.textSecondary, marginTop: 3, fontStyle: 'italic' },
   recommendedBadge: {
     backgroundColor: colors.successTint,
     borderRadius: radius.pill,

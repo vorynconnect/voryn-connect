@@ -331,12 +331,48 @@ wallet reports. Paying providers out is still a **manual finance step** — ther
 is no automated bank transfer; settle weekly against the available balance and
 record a `ProviderPayout` row.
 
-**Voryn Points**: 1 point = JMD 1 of discount, earned at 1 point per JMD 100 of
-eligible items (never on delivery, tax, fees or tips), redeemable for up to 20%
-of an eligible order. Points are **not convertible to cash** — that is
-deliberate, because freely convertible points start to resemble stored monetary
-value, which BOJ treats as a regulated payment activity. Do not enable a
-points-to-cash path without your payment partner and legal adviser.
+**Voryn Points**: 1 point = JMD 1 of discount, earned slowly (about 1% of
+eligible items, never on delivery, tax, fees or tips). Points are **not
+convertible to cash** — that is deliberate, because freely convertible points
+start to resemble stored monetary value, which BOJ treats as a regulated
+payment activity. Do not enable a points-to-cash path without your payment
+partner and legal adviser.
+
+**The rewards engine** (`src/lib/loyalty.ts` + `modules/rewards`) decides how
+much any single order may absorb. Every limit is evaluated and the tightest
+wins, so a redemption is capped by whichever of these binds first:
+
+| Limit | Rule |
+| ----- | ---- |
+| Customer balance | Points actually held |
+| Order share | 20% of items + delivery |
+| **Commission safety** | **80% of the commission Voryn expects on that order** |
+| Delivery coverage | Never enough to make delivery free |
+| Minimum order | No redemption below JMD 1,500 |
+
+The commission safety cap is the one that matters. Without it a customer with a
+large balance could redeem 20% of a JMD 4,600 order (JMD 920) against a JMD 435
+commission and turn a profitable order into a JMD 485 loss. With it, that same
+order redeems JMD 348 and Voryn still clears JMD 87. Checkout tells the customer
+which limit applied rather than silently offering less than they expected.
+
+Earn rates vary by category, because margins do — groceries earn 0.75 points per
+JMD 100 while home services earn 2 and vehicle rentals 3. Membership tiers
+(Bronze, Silver, Gold, Platinum, set from trailing-12-month spend) and
+time-boxed campaigns raise the **earn rate only**; nothing ever raises what a
+point is worth at redemption, which keeps the liability bounded.
+
+Points expire 12 months after they are earned, oldest spent first, and the app
+warns 30 days ahead. Expired points return their provision to the rewards fund.
+
+**The rewards fund** is a provision, not a gate. Each settled transaction sets
+aside 0.5% of commission (`REWARDS_FUND_CONTRIBUTION_BPS`), redemptions draw it
+down, and expired points credit it back. It starts empty and will legitimately
+run a small deficit early on, because customers redeem before contributions
+accumulate — that is why only a deficit beyond
+`REWARDS_FUND_DEFICIT_TOLERANCE_MINOR` (default JMD 50,000) tightens the safety
+cap. A persistent deficit past that point is the signal to raise the
+contribution rate or lower the caps deliberately, not a bug.
 
 Two things to take to your accountant before launch:
 
@@ -346,11 +382,14 @@ Two things to take to your accountant before launch:
   expire. The data to compute it is in `LoyaltyTransaction` and the
   `POINTS_EARNED` / `POINTS_REDEEMED` rows of `SettlementRecord`.
 - **Reward cost vs commission.** Voryn funds points by default
-  (`Order.rewardFunding = VORYN_FUNDED`), so a heavily redeemed order can wipe
-  out its own commission. Watch the ratio of `VORYN_FUNDED_DISCOUNT` to
-  `VORYN_COMMISSION` + `VORYN_DELIVERY_MARGIN` once real volume arrives, and
-  move promotions to merchant-funded or shared where a provider has agreed to
-  it in writing. Never charge a merchant for a reward they did not approve.
+  (`Order.rewardFunding = VORYN_FUNDED`). The commission safety cap keeps every
+  individual order profitable, but watch the ratio of `VORYN_FUNDED_DISCOUNT` to
+  `VORYN_COMMISSION` + `VORYN_DELIVERY_MARGIN` across the book once real volume
+  arrives, along with the rewards fund balance. Move promotions to
+  merchant-funded or shared where a provider has agreed to it in writing; a
+  merchant-funded reward lifts the commission cap because the merchant, not
+  Voryn, is paying for it. Never charge a merchant for a reward they did not
+  approve.
 
 Every completed transaction writes a full `SettlementRecord` breakdown, so
 refunds, provider statements and revenue reporting all recompute from the

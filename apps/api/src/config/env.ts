@@ -90,6 +90,10 @@ const envSchema = z.object({
   DELIVERY_MARGIN_MAX_MINOR: z.coerce.number().int().min(0).default(20000),
   // Ride drivers pay a percentage commission on the fare (never on tips).
   RIDE_COMMISSION_BPS: z.coerce.number().int().min(0).max(5000).default(1200),
+  // The rewards fund is a provision, not a gate: it legitimately runs a small
+  // deficit early on, because customers redeem before contributions accumulate.
+  // Only a deficit past this tolerance tightens the redemption safety cap.
+  REWARDS_FUND_DEFICIT_TOLERANCE_MINOR: z.coerce.number().int().min(0).default(5_000_000),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -37,9 +37,14 @@ export type WalletSnapshot = {
   wallet: { id: string; balanceMinor: number; currency: string; status: string; hasPin: boolean };
   loyalty: {
     pointsBalance: number;
-    pointValueMinor?: number;
-    maxRedeemPercent?: number;
-    cashConvertible?: boolean;
+    pointValueMinor: number;
+    maxRedeemPercent: number;
+    minOrderMinor: number;
+    cashConvertible: boolean;
+    tier: 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM';
+    tierMultiplier: number;
+    expiringPoints: number;
+    expiringAt: string | null;
   };
 };
 

@@ -243,6 +243,33 @@ enum LoyaltyEntryType {
   ADJUSTMENT
 }
 
+// Membership tiers change how fast points are EARNED, never what a point is
+// worth. Raising the earn rate costs ~1% of spend; raising point value would
+// uncap the liability.
+enum MemberTier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+}
+
+enum LoyaltyCampaignType {
+  MULTIPLIER // e.g. Double Points Friday
+  BONUS_POINTS // flat bonus on a qualifying order
+}
+
+// Rewards are financed from a ring-fenced fund rather than straight out of
+// each order's commission, so a burst of redemptions cannot drain operating
+// cash. Contributions accrue per settled transaction; expired points return
+// their provision to the fund.
+enum RewardsFundEntryType {
+  COMMISSION_CONTRIBUTION
+  REDEMPTION
+  EXPIRY_CREDIT
+  MANUAL_TOP_UP
+  ADJUSTMENT
+}
+
 enum EarningStatus {
   PENDING
   AVAILABLE
@@ -409,7 +436,10 @@ model CustomerProfile {
   dateOfBirth DateTime?
   avatarUrl   String?
   primaryUse  String?   // rides | delivery | services
-  memberTier  String    @default("Standard") // Standard | Gold | Platinum
+  // Tier is derived from trailing-12-month eligible spend and only changes the
+  // points earn rate (see lib/loyalty.ts), never the value of a point.
+  memberTier  MemberTier @default(BRONZE)
+  tierReviewedAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 }
@@ -1539,6 +1569,9 @@ model LoyaltyAccount {
   transactions LoyaltyTransaction[]
 }
 
+// EARN rows double as expiry lots: `pointsRemaining` is drawn down FIFO by
+// redemptions, and whatever is left when `expiresAt` passes is swept into an
+// EXPIRE row. Non-EARN rows leave both fields null.
 model LoyaltyTransaction {
   id        String           @id @default(cuid())
   accountId String
@@ -1548,9 +1581,53 @@ model LoyaltyTransaction {
   description String
   referenceType String?
   referenceId String?
+  expiresAt DateTime? // EARN only
+  pointsRemaining Int? // EARN only: unspent, unexpired points from this lot
   createdAt DateTime         @default(now())
 
   @@index([accountId, createdAt])
+  // Drives both FIFO redemption and the lazy expiry sweep.
+  @@index([accountId, type, expiresAt])
+}
+
+// Time-boxed earn promotions (Double Points Friday, first-order bonus, …).
+// Deliberately affects earn only: a campaign can never raise what a point is
+// worth at redemption, so its cost is bounded by spend during the window.
+model LoyaltyCampaign {
+  id          String              @id @default(cuid())
+  name        String
+  description String?
+  type        LoyaltyCampaignType @default(MULTIPLIER)
+  // MULTIPLIER: basis points applied to earned points (15000 = 1.5x).
+  // BONUS_POINTS: flat points granted on a qualifying order.
+  value       Int
+  categories  ProviderCategory[] // empty = every category
+  minSpendMinor Int               @default(0)
+  firstOrderOnly Boolean          @default(false)
+  startsAt    DateTime
+  endsAt      DateTime
+  isActive    Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@index([isActive, startsAt, endsAt])
+}
+
+// Ledger for the Voryn Rewards Fund. Credits accrue from commission on every
+// settled transaction and from expired points; redemptions debit it. The
+// balance is the running sum of amountMinor.
+model RewardsFundEntry {
+  id            String               @id @default(cuid())
+  type          RewardsFundEntryType
+  amountMinor   Int // signed: contributions positive, redemptions negative
+  balanceAfterMinor Int
+  description   String
+  referenceType String?
+  referenceId   String?
+  idempotencyKey String?             @unique
+  createdAt     DateTime             @default(now())
+
+  @@index([type, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────

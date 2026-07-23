@@ -8,7 +8,8 @@ import { requireAuth } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { walletService } from './wallet.service';
 import { assertCardPaymentsAvailable } from '../payments/payment.service';
-import { MAX_REDEEM_PERCENT, POINT_VALUE_MINOR } from '../../lib/loyalty';
+import { MAX_REDEEM_PERCENT } from '../../lib/loyalty';
+import { pointsSnapshot } from '../rewards/rewards.service';
 
 export const walletRouter = Router();
 walletRouter.use(requireAuth);
@@ -16,7 +17,9 @@ walletRouter.use(requireAuth);
 walletRouter.get('/', async (req, res, next) => {
   try {
     const wallet = await walletService.getWallet(req.auth!.sub);
-    const loyalty = await prisma.loyaltyAccount.findUnique({ where: { userId: req.auth!.sub } });
+    // Points are loyalty rewards, never cash: earned slowly, redeemed at
+    // checkout, and swept when they pass their 12-month life.
+    const loyalty = await pointsSnapshot(req.auth!.sub);
     res.json({
       wallet: {
         id: wallet.id,
@@ -25,14 +28,7 @@ walletRouter.get('/', async (req, res, next) => {
         status: wallet.status,
         hasPin: Boolean(wallet.pinHash),
       },
-      loyalty: {
-        pointsBalance: loyalty?.pointsBalance ?? 0,
-        // 1 pt = JMD 1, redeemable at checkout for up to 20% of the eligible
-        // amount. Points are loyalty rewards, never cash.
-        pointValueMinor: POINT_VALUE_MINOR,
-        maxRedeemPercent: MAX_REDEEM_PERCENT,
-        cashConvertible: false,
-      },
+      loyalty,
     });
   } catch (err) {
     next(err);

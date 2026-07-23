@@ -130,6 +130,10 @@ services:
       # Commission on a ride fare (1200 = 12%). Never applied to tips.
       - key: RIDE_COMMISSION_BPS
         value: "1200"
+      # Rewards fund deficit tolerated before redemption caps tighten
+      # (JMD 50,000). The per-order commission cap is the real protection.
+      - key: REWARDS_FUND_DEFICIT_TOLERANCE_MINOR
+        value: "5000000"
       # Per-instance DB pool cap: instances × limit must stay under the
       # Postgres plan's connection budget (basic-256mb allows ~100).
       - key: DB_CONNECTION_LIMIT

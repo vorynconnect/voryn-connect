@@ -22,6 +22,12 @@ export default function RedeemScreen() {
   const pointsBalance = loyalty?.pointsBalance ?? 0;
   const valueMinor = loyalty?.pointValueMinor ?? 100;
   const maxPercent = loyalty?.maxRedeemPercent ?? 20;
+  const minOrder = loyalty?.minOrderMinor ?? 150000;
+  const tier = loyalty?.tier ?? 'BRONZE';
+  const tierMultiplier = loyalty?.tierMultiplier ?? 1;
+  const expiringPoints = loyalty?.expiringPoints ?? 0;
+  const expiringAt = loyalty?.expiringAt ? new Date(loyalty.expiringAt) : null;
+  const tierLabel = tier.charAt(0) + tier.slice(1).toLowerCase();
 
   return (
     <View style={styles.flex}>
@@ -41,20 +47,37 @@ export default function RedeemScreen() {
               Worth up to {formatJmd(pointsBalance * valueMinor)} in discounts
             </Text>
           </View>
+          <View style={styles.tierBadge}>
+            <Text style={styles.tierBadgeText}>{tierLabel}</Text>
+          </View>
         </Card>
+
+        {expiringPoints > 0 && expiringAt ? (
+          <View style={styles.expiryRow}>
+            <Ionicons name="alert-circle" size={17} color={colors.warning} />
+            <Text style={styles.expiryText}>
+              {formatPoints(expiringPoints)} expire on{' '}
+              {expiringAt.toLocaleDateString('en-JM', { day: 'numeric', month: 'long' })}. Use them
+              on your next order.
+            </Text>
+          </View>
+        ) : null}
 
         <Text style={styles.sectionTitle}>How points work</Text>
         <Card padded={false} style={styles.rulesCard}>
           {[
             {
               icon: 'cart' as const,
-              title: 'Earn 1 point per JMD 100 spent',
-              body: 'You earn on the items in your orders, bookings and rides. Taxes, fees and tips do not earn points.',
+              title: `Earn ${tierMultiplier === 1 ? '1 point' : `${tierMultiplier}x points`} per JMD 100 spent`,
+              body:
+                tierMultiplier === 1
+                  ? 'You earn on the items in your orders, bookings and rides. Taxes, fees and tips do not earn points. Home services and rentals earn faster.'
+                  : `Your ${tierLabel} tier earns ${tierMultiplier}x on every eligible purchase. Taxes, fees and tips do not earn points.`,
             },
             {
               icon: 'pricetag' as const,
               title: '1 point = JMD 1 off at checkout',
-              body: `Flip the "Redeem points" switch when you pay. You can cover up to ${maxPercent}% of an eligible order.`,
+              body: `Flip the "Redeem points" switch when you pay. You can cover up to ${maxPercent}% of an eligible order over ${formatJmd(minOrder)}.`,
             },
             {
               icon: 'heart' as const,
@@ -113,6 +136,23 @@ const styles = StyleSheet.create({
   balanceLabel: { fontSize: fontSize.sm, color: colors.textSecondary },
   balanceValue: { fontSize: fontSize.xl, fontWeight: fontWeight.heavy, color: colors.textPrimary },
   balanceWorth: { fontSize: fontSize.sm, color: colors.textSecondary, marginTop: 1 },
+  tierBadge: {
+    backgroundColor: colors.skyTint,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  tierBadgeText: { fontSize: fontSize.xs, fontWeight: fontWeight.bold, color: colors.blue },
+  expiryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.warningTint,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.base,
+  },
+  expiryText: { flex: 1, fontSize: fontSize.xs, color: colors.textPrimary, lineHeight: 17 },
   sectionTitle: { fontSize: fontSize.md, fontWeight: fontWeight.bold, color: colors.textPrimary, marginBottom: spacing.md },
   rulesCard: { marginBottom: spacing.base },
   ruleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, padding: spacing.base },

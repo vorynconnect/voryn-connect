@@ -8,7 +8,14 @@ import { recordTrackingEvent } from '../tracking/tracking.service';
 import { notifyProviderStaff } from '../../lib/notify';
 import { walletService } from '../wallet/wallet.service';
 import { settlementService } from '../settlement/settlement.service';
-import { MAX_REDEEM_PERCENT, POINT_VALUE_MINOR, maxRedeemablePoints } from '../../lib/loyalty';
+import { POINT_VALUE_MINOR } from '../../lib/loyalty';
+import {
+  quoteRedemption,
+  restorePoints,
+  reverseEarnedPoints,
+  rewardsFund,
+  spendPoints,
+} from '../rewards/rewards.service';
 import { OUT_OF_ZONE_MESSAGE, deliveryQuote } from './delivery-quote';
 
 // Provider-funded commission model: customers pay no Voryn platform fee.
@@ -67,10 +74,18 @@ export const ordersService = {
       subtotalMinor + trip.deliveryFeeMinor + SERVICE_FEE_MINOR + taxMinor - discountMinor,
     );
 
-    // Points: redeemable against the eligible item amount only, capped at 20%.
-    const loyalty = await prisma.loyaltyAccount.findUnique({ where: { userId: customerId } });
-    const eligibleMinor = Math.max(0, subtotalMinor - discountMinor);
-    const pointsBalance = loyalty?.pointsBalance ?? 0;
+    // Points: the rewards engine decides how much this order may absorb, so a
+    // redemption can never cost more than the commission it protects.
+    const provider = await prisma.provider.findUniqueOrThrow({
+      where: { id: trip.providerId },
+      select: { commissionBps: true, categories: true },
+    });
+    const points = await quoteRedemption({
+      userId: customerId,
+      itemsMinor: Math.max(0, subtotalMinor - discountMinor),
+      deliveryFeeMinor: trip.deliveryFeeMinor,
+      provider,
+    });
 
     return {
       cart,
@@ -81,12 +96,8 @@ export const ordersService = {
       taxMinor,
       discountMinor,
       totalBeforeTipMinor,
-      points: {
-        balance: pointsBalance,
-        maxRedeemable: maxRedeemablePoints(eligibleMinor, pointsBalance),
-        valueMinor: POINT_VALUE_MINOR,
-        maxPercent: MAX_REDEEM_PERCENT,
-      },
+      provider,
+      points,
     };
   },
 
@@ -118,13 +129,13 @@ export const ordersService = {
     const etaMin = quote.etaMinMinutes;
     const etaMax = quote.etaMaxMinutes;
 
-    // Points redemption: 1 pt = JMD 1, capped at 20% of the eligible item
-    // amount, funded by Voryn (the merchant's earnings are unaffected).
+    // Points redemption: the engine's cap is authoritative, whatever the client
+    // asked for. Funded by Voryn, so the merchant's earnings are unaffected.
     const discountMinor = quote.discountMinor;
     const requestedPoints = input.pointsToRedeem ?? (input.redeemPoints ? Number.MAX_SAFE_INTEGER : 0);
     let pointsRedeemed = 0;
     if (requestedPoints > 0) {
-      pointsRedeemed = Math.min(requestedPoints, quote.points.maxRedeemable);
+      pointsRedeemed = Math.min(requestedPoints, quote.points.maxPoints);
     }
     const pointsDiscountMinor = pointsRedeemed * POINT_VALUE_MINOR;
 
@@ -134,18 +145,6 @@ export const ordersService = {
       subtotalMinor + deliveryFeeMinor + SERVICE_FEE_MINOR + taxMinor + tipMinor
         - discountMinor - pointsDiscountMinor,
     );
-
-    // Debit points up front with a balance guard so concurrent checkouts can
-    // never spend the same points twice; restored if payment fails below.
-    if (pointsRedeemed > 0) {
-      const debited = await prisma.loyaltyAccount.updateMany({
-        where: { userId: input.customerId, pointsBalance: { gte: pointsRedeemed } },
-        data: { pointsBalance: { decrement: pointsRedeemed } },
-      });
-      if (debited.count === 0) {
-        throw AppError.badRequest('Not enough points to redeem.', 'INSUFFICIENT_POINTS');
-      }
-    }
 
     // Create the order in PENDING_PAYMENT, take payment, then mark PLACED.
     const order = await prisma.order.create({
@@ -188,6 +187,20 @@ export const ordersService = {
       include: { items: true },
     });
 
+    // Spend the points now that the order exists to reference, and before any
+    // money moves: the balance guard means concurrent checkouts cannot spend
+    // the same points twice. Restored below if the payment fails.
+    if (pointsRedeemed > 0) {
+      const spent = await spendPoints({
+        userId: input.customerId,
+        points: pointsRedeemed,
+        description: `Redeemed on order ${order.code}`,
+        referenceType: 'order',
+        referenceId: order.id,
+      });
+      if (!spent) throw AppError.badRequest('Not enough points to redeem.', 'INSUFFICIENT_POINTS');
+    }
+
     let payment;
     try {
       payment = await takePayment({
@@ -207,9 +220,12 @@ export const ordersService = {
         data: { status: OrderStatus.PENDING_PAYMENT },
       });
       if (pointsRedeemed > 0) {
-        await prisma.loyaltyAccount.update({
-          where: { userId: input.customerId },
-          data: { pointsBalance: { increment: pointsRedeemed } },
+        await restorePoints({
+          userId: input.customerId,
+          points: pointsRedeemed,
+          description: 'Points returned after a failed payment',
+          referenceType: 'order',
+          referenceId: order.id,
         });
       }
       throw err;
@@ -221,22 +237,20 @@ export const ordersService = {
       include: { items: true, provider: { select: { id: true, name: true, logoUrl: true } } },
     });
 
+    if (pointsRedeemed > 0) {
+      // The discount is financed by the rewards fund, not by this order's cash.
+      await rewardsFund.record({
+        type: 'REDEMPTION',
+        amountMinor: -pointsDiscountMinor,
+        description: `Points redeemed on ${placed.code}`,
+        referenceType: 'order',
+        referenceId: placed.id,
+        idempotencyKey: `fund-redeem:order:${placed.id}`,
+      });
+    }
+
     await prisma.$transaction([
       prisma.cart.update({ where: { id: cart.id }, data: { isActive: false } }),
-      ...(pointsRedeemed > 0
-        ? [
-            prisma.loyaltyTransaction.create({
-              data: {
-                account: { connect: { userId: input.customerId } },
-                type: 'REDEEM',
-                points: -pointsRedeemed,
-                description: `Redeemed on order ${placed.code}`,
-                referenceType: 'order',
-                referenceId: placed.id,
-              },
-            }),
-          ]
-        : []),
       ...(cart.promoCodeId
         ? [
             prisma.promoRedemption.create({
@@ -379,24 +393,34 @@ export const ordersService = {
     if (order.paymentId) {
       await refundPayment(order.paymentId, `Order ${order.code} cancelled`);
     }
-    // A fully cancelled order restores the points that were spent on it.
+    // A fully cancelled order gives back the points it spent, and takes back
+    // any it awarded (rare: cancelling after delivery), which may leave the
+    // account in deficit rather than blocking the customer's cash refund.
     if (order.pointsRedeemed > 0) {
-      await prisma.$transaction([
-        prisma.loyaltyAccount.update({
-          where: { userId: order.customerId },
-          data: { pointsBalance: { increment: order.pointsRedeemed } },
-        }),
-        prisma.loyaltyTransaction.create({
-          data: {
-            account: { connect: { userId: order.customerId } },
-            type: 'ADJUSTMENT',
-            points: order.pointsRedeemed,
-            description: `Points restored from cancelled order ${order.code}`,
-            referenceType: 'order',
-            referenceId: order.id,
-          },
-        }),
-      ]);
+      await restorePoints({
+        userId: order.customerId,
+        points: order.pointsRedeemed,
+        description: `Points restored from cancelled order ${order.code}`,
+        referenceType: 'order',
+        referenceId: order.id,
+      });
+      await rewardsFund.record({
+        type: 'REDEMPTION',
+        amountMinor: order.pointsDiscountMinor,
+        description: `Redemption reversed on cancelled ${order.code}`,
+        referenceType: 'order',
+        referenceId: order.id,
+        idempotencyKey: `fund-redeem-reversal:order:${order.id}`,
+      });
+    }
+    if (order.pointsEarned > 0) {
+      await reverseEarnedPoints({
+        userId: order.customerId,
+        points: order.pointsEarned,
+        description: `Points reversed on cancelled order ${order.code}`,
+        referenceType: 'order',
+        referenceId: order.id,
+      });
     }
     await recordTrackingEvent({
       subjectType: 'ORDER',
