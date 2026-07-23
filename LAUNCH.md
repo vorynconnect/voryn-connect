@@ -78,7 +78,7 @@ walkthrough of the customer app, driver dashboard, and partner dashboard.
 | 5 | **Maps provider — LocationIQ** (locationiq.com) *or* Geoapify | Real geocoding + routing (replaces the demo servers, which forbid production use). | Free 5k req/day → paid | `apps/api/.env`: `MAPS_GEOCODER_URL=https://us1.locationiq.com/v1`, `MAPS_ROUTER_URL=https://us1.locationiq.com/v1`, `MAPS_GEOCODER_KEY`, `MAPS_ROUTER_KEY` |
 | 6 | **Map tiles — MapTiler** (maptiler.com) or Stadia Maps | The visible map basemap on web/partner dashboards (replaces CARTO free tiles). | Free tier → paid | See §4 (tile URL in the web shim + `partner-dashboard/live-map.html`) |
 | 7 | **Object storage — Cloudflare R2** (recommended; zero egress fees) or Backblaze B2 / AWS S3 / DO Spaces | Stores partner logos, product images, avatars durably. **Required** unless your host has a persistent disk volume. | R2 free ≤10GB → cheap | `apps/api/.env`: `MEDIA_STORAGE=s3`, `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `MEDIA_PUBLIC_BASE_URL` |
-| 8 | **Domain registrar** (Namecheap, Cloudflare, etc.) | Your public domains, e.g. `voryn.app`, `partner.voryn.app`. | ~US$12/yr | DNS → your host; also `CORS_ORIGINS` |
+| 8 | **Domain registrar** — done: `vorynconnect.com` on Cloudflare | Public domains: site at `vorynconnect.com`, API at `api.vorynconnect.com` (see GO-LIVE.md). | ~US$12/yr | DNS → your host; also `CORS_ORIGINS` |
 | 9 | **Apple Developer Program** | Publish the iOS app. | US$99/yr | Used by EAS Build (§5) |
 | 10 | **Google Play Console** | Publish the Android app. | US$25 once | Used by EAS Build (§5) |
 | 11 | **Expo / EAS** (expo.dev) | Cloud-build the mobile app binaries. | Free tier works | `eas.json` (§5) |
@@ -117,7 +117,7 @@ TWILIO_ACCOUNT_SID=ACxxxxxxxx
 TWILIO_AUTH_TOKEN=xxxxxxxx
 TWILIO_MESSAGING_SERVICE_SID=MGxxxxxxxx
 
-CORS_ORIGINS=https://voryn.app,https://www.voryn.app,https://partner.voryn.app
+CORS_ORIGINS=https://vorynconnect.com,https://www.vorynconnect.com
 
 # Recommended: object storage (durable, survives redeploys). See row 7.
 MEDIA_STORAGE=s3
@@ -127,7 +127,7 @@ S3_BUCKET=voryn-media
 S3_ACCESS_KEY_ID=xxxxxxxx
 S3_SECRET_ACCESS_KEY=xxxxxxxx
 S3_FORCE_PATH_STYLE=false
-MEDIA_PUBLIC_BASE_URL=https://media.voryn.app
+MEDIA_PUBLIC_BASE_URL=https://media.vorynconnect.com
 MEDIA_MAX_SIZE_MB=8
 # (Alternative: MEDIA_STORAGE=local with MEDIA_UPLOAD_DIR on a persistent volume.)
 
@@ -213,15 +213,14 @@ domain), and add that site's domain to the API's `CORS_ORIGINS`.
 (icons, bundle IDs `com.voryn.connect`, permission strings, version 1.0.0). The
 project passes `expo-doctor` (18/18) and a native prebuild.
 
-**Before your first build, fill in two placeholders:**
-1. `app.json` → `expo.extra.apiUrl` — set to your production API URL (e.g.
-   `https://voryn-api.onrender.com` or your custom domain). This is what store
-   builds call (dev still auto-derives the LAN host, so it won't affect you
-   locally). `src/lib/config.ts` reads it.
-2. `app.json` → `android.config.googleMaps.apiKey` — your Android Google Maps
-   key (`REPLACE_WITH_ANDROID_GOOGLE_MAPS_API_KEY`). iOS uses Apple Maps and
-   needs no key. Get one in Google Cloud Console → Maps SDK for Android, and
-   restrict it to the `com.voryn.connect` package.
+**Before your first build, one placeholder remains:**
+- `app.json` → `android.config.googleMaps.apiKey` — your Android Google Maps
+  key (`REPLACE_WITH_ANDROID_GOOGLE_MAPS_API_KEY`). iOS uses Apple Maps and
+  needs no key. Get one in Google Cloud Console → Maps SDK for Android, and
+  restrict it to the `com.voryn.connect` package.
+
+(`expo.extra.apiUrl` is already set to `https://api.vorynconnect.com` — store
+builds call it; dev still auto-derives the LAN host via `src/lib/config.ts`.)
 
 **Then build and submit:**
 ```bash
