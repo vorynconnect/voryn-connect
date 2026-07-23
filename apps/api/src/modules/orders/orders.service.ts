@@ -7,9 +7,13 @@ import { takePayment, refundPayment } from '../payments/payment.service';
 import { recordTrackingEvent } from '../tracking/tracking.service';
 import { notifyProviderStaff } from '../../lib/notify';
 import { walletService } from '../wallet/wallet.service';
+import { settlementService } from '../settlement/settlement.service';
+import { MAX_REDEEM_PERCENT, POINT_VALUE_MINOR, maxRedeemablePoints } from '../../lib/loyalty';
 import { OUT_OF_ZONE_MESSAGE, deliveryQuote } from './delivery-quote';
 
-const SERVICE_FEE_MINOR = 15000; // JMD 150.00 platform service fee
+// Provider-funded commission model: customers pay no Voryn platform fee.
+// Voryn's revenue comes from the merchant commission and delivery margin.
+export const SERVICE_FEE_MINOR = 0;
 const TAX_RATE_PERCENT = 10;
 
 /**
@@ -63,6 +67,11 @@ export const ordersService = {
       subtotalMinor + trip.deliveryFeeMinor + SERVICE_FEE_MINOR + taxMinor - discountMinor,
     );
 
+    // Points: redeemable against the eligible item amount only, capped at 20%.
+    const loyalty = await prisma.loyaltyAccount.findUnique({ where: { userId: customerId } });
+    const eligibleMinor = Math.max(0, subtotalMinor - discountMinor);
+    const pointsBalance = loyalty?.pointsBalance ?? 0;
+
     return {
       cart,
       address,
@@ -72,6 +81,12 @@ export const ordersService = {
       taxMinor,
       discountMinor,
       totalBeforeTipMinor,
+      points: {
+        balance: pointsBalance,
+        maxRedeemable: maxRedeemablePoints(eligibleMinor, pointsBalance),
+        valueMinor: POINT_VALUE_MINOR,
+        maxPercent: MAX_REDEEM_PERCENT,
+      },
     };
   },
 
@@ -80,6 +95,9 @@ export const ordersService = {
     addressId: string;
     paymentMethodType: PaymentMethodType;
     tipMinor?: number;
+    /** Exact points to apply (capped server-side at 20% of the eligible amount). */
+    pointsToRedeem?: number;
+    /** Legacy toggle from older app builds: redeem the maximum allowed. */
     redeemPoints?: boolean;
     idempotencyKey: string;
   }) {
@@ -100,22 +118,34 @@ export const ordersService = {
     const etaMin = quote.etaMinMinutes;
     const etaMax = quote.etaMaxMinutes;
 
-    // Loyalty redemption: 500 pts => JMD 250.00 off (50 minor units per point).
-    let discountMinor = quote.discountMinor;
+    // Points redemption: 1 pt = JMD 1, capped at 20% of the eligible item
+    // amount, funded by Voryn (the merchant's earnings are unaffected).
+    const discountMinor = quote.discountMinor;
+    const requestedPoints = input.pointsToRedeem ?? (input.redeemPoints ? Number.MAX_SAFE_INTEGER : 0);
     let pointsRedeemed = 0;
-    if (input.redeemPoints) {
-      const loyalty = await prisma.loyaltyAccount.findUnique({ where: { userId: input.customerId } });
-      if (loyalty && loyalty.pointsBalance >= 500) {
-        pointsRedeemed = 500;
-        discountMinor += 25000;
-      }
+    if (requestedPoints > 0) {
+      pointsRedeemed = Math.min(requestedPoints, quote.points.maxRedeemable);
     }
+    const pointsDiscountMinor = pointsRedeemed * POINT_VALUE_MINOR;
 
     const tipMinor = input.tipMinor ?? 0;
     const totalMinor = Math.max(
       0,
-      subtotalMinor + deliveryFeeMinor + SERVICE_FEE_MINOR + taxMinor + tipMinor - discountMinor,
+      subtotalMinor + deliveryFeeMinor + SERVICE_FEE_MINOR + taxMinor + tipMinor
+        - discountMinor - pointsDiscountMinor,
     );
+
+    // Debit points up front with a balance guard so concurrent checkouts can
+    // never spend the same points twice; restored if payment fails below.
+    if (pointsRedeemed > 0) {
+      const debited = await prisma.loyaltyAccount.updateMany({
+        where: { userId: input.customerId, pointsBalance: { gte: pointsRedeemed } },
+        data: { pointsBalance: { decrement: pointsRedeemed } },
+      });
+      if (debited.count === 0) {
+        throw AppError.badRequest('Not enough points to redeem.', 'INSUFFICIENT_POINTS');
+      }
+    }
 
     // Create the order in PENDING_PAYMENT, take payment, then mark PLACED.
     const order = await prisma.order.create({
@@ -138,6 +168,8 @@ export const ordersService = {
         discountMinor,
         tipMinor,
         totalMinor,
+        pointsRedeemed,
+        pointsDiscountMinor,
         promoCodeId: cart.promoCodeId,
         etaMinMinutes: etaMin,
         etaMaxMinutes: etaMax,
@@ -174,6 +206,12 @@ export const ordersService = {
         where: { id: order.id },
         data: { status: OrderStatus.PENDING_PAYMENT },
       });
+      if (pointsRedeemed > 0) {
+        await prisma.loyaltyAccount.update({
+          where: { userId: input.customerId },
+          data: { pointsBalance: { increment: pointsRedeemed } },
+        });
+      }
       throw err;
     }
 
@@ -187,10 +225,6 @@ export const ordersService = {
       prisma.cart.update({ where: { id: cart.id }, data: { isActive: false } }),
       ...(pointsRedeemed > 0
         ? [
-            prisma.loyaltyAccount.update({
-              where: { userId: input.customerId },
-              data: { pointsBalance: { decrement: pointsRedeemed } },
-            }),
             prisma.loyaltyTransaction.create({
               data: {
                 account: { connect: { userId: input.customerId } },
@@ -217,26 +251,8 @@ export const ordersService = {
         : []),
     ]);
 
-    // Loyalty earn: 1 point per JMD 100 spent.
-    const pointsEarned = Math.floor(totalMinor / 10000);
-    if (pointsEarned > 0) {
-      await prisma.$transaction([
-        prisma.loyaltyAccount.update({
-          where: { userId: input.customerId },
-          data: { pointsBalance: { increment: pointsEarned } },
-        }),
-        prisma.loyaltyTransaction.create({
-          data: {
-            account: { connect: { userId: input.customerId } },
-            type: 'EARN',
-            points: pointsEarned,
-            description: `Earned on order ${placed.code}`,
-            referenceType: 'order',
-            referenceId: placed.id,
-          },
-        }),
-      ]);
-    }
+    // Points are earned at delivery (settlement), not at checkout, so a
+    // cancelled order never needs an earn reversal.
 
     await recordTrackingEvent({
       subjectType: 'ORDER',
@@ -321,6 +337,11 @@ export const ordersService = {
       },
     });
     await recordTrackingEvent({ subjectType: 'ORDER', subjectId: orderId, status, label, metadata: extra });
+    // First completion settles the money: merchant earning, courier payout,
+    // customer points, full ledger breakdown. Idempotent across both statuses.
+    if (status === OrderStatus.DELIVERED || status === OrderStatus.COMPLETED) {
+      await settlementService.settleOrder(orderId);
+    }
     return order;
   },
 
@@ -357,6 +378,25 @@ export const ordersService = {
     });
     if (order.paymentId) {
       await refundPayment(order.paymentId, `Order ${order.code} cancelled`);
+    }
+    // A fully cancelled order restores the points that were spent on it.
+    if (order.pointsRedeemed > 0) {
+      await prisma.$transaction([
+        prisma.loyaltyAccount.update({
+          where: { userId: order.customerId },
+          data: { pointsBalance: { increment: order.pointsRedeemed } },
+        }),
+        prisma.loyaltyTransaction.create({
+          data: {
+            account: { connect: { userId: order.customerId } },
+            type: 'ADJUSTMENT',
+            points: order.pointsRedeemed,
+            description: `Points restored from cancelled order ${order.code}`,
+            referenceType: 'order',
+            referenceId: order.id,
+          },
+        }),
+      ]);
     }
     await recordTrackingEvent({
       subjectType: 'ORDER',

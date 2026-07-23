@@ -35,7 +35,12 @@ export type HomeFeed = {
 
 export type WalletSnapshot = {
   wallet: { id: string; balanceMinor: number; currency: string; status: string; hasPin: boolean };
-  loyalty: { pointsBalance: number };
+  loyalty: {
+    pointsBalance: number;
+    pointValueMinor?: number;
+    maxRedeemPercent?: number;
+    cashConvertible?: boolean;
+  };
 };
 
 export type WalletTransaction = {

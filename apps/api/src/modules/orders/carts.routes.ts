@@ -5,6 +5,7 @@ import { AppError } from '../../lib/errors';
 import { requireAuth } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { deliveryQuote } from './delivery-quote';
+import { SERVICE_FEE_MINOR } from './orders.service';
 
 export const cartsRouter = Router();
 cartsRouter.use(requireAuth);
@@ -39,7 +40,20 @@ cartsRouter.get('/', async (req, res, next) => {
       etaMinMinutes = quote.etaMinMinutes;
       etaMaxMinutes = quote.etaMaxMinutes;
     }
-    res.json({ cart: cart ? { ...cart, deliveryFeeMinor, distanceKm, etaMinMinutes, etaMaxMinutes } : null });
+    res.json({
+      cart: cart
+        ? {
+            ...cart,
+            deliveryFeeMinor,
+            distanceKm,
+            etaMinMinutes,
+            etaMaxMinutes,
+            // Provider-funded model: no customer platform fee. Sent explicitly
+            // so the cart never has to hardcode a rate that can drift.
+            serviceFeeMinor: SERVICE_FEE_MINOR,
+          }
+        : null,
+    });
   } catch (err) {
     next(err);
   }

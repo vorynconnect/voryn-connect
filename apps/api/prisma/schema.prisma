@@ -243,6 +243,38 @@ enum LoyaltyEntryType {
   ADJUSTMENT
 }
 
+enum EarningStatus {
+  PENDING
+  AVAILABLE
+  PAID
+  REVERSED
+}
+
+// Who funds a customer reward (points discount, promo) on a transaction.
+// Merchants must never fund a reward they did not agree to.
+enum RewardFunding {
+  VORYN_FUNDED
+  MERCHANT_FUNDED
+  SHARED
+}
+
+enum SettlementEntryType {
+  CUSTOMER_PAYMENT
+  MERCHANT_GROSS_SALE
+  MERCHANT_FUNDED_DISCOUNT
+  VORYN_FUNDED_DISCOUNT
+  VORYN_COMMISSION
+  PROVIDER_NET_EARNING
+  DELIVERY_FEE
+  COURIER_EARNING
+  VORYN_DELIVERY_MARGIN
+  SERVICE_FEE
+  TIP
+  TAX
+  POINTS_EARNED
+  POINTS_REDEEMED
+}
+
 enum PayoutStatus {
   REQUESTED
   PROCESSING
@@ -479,6 +511,7 @@ model Provider {
   email       String?
   ratingAvg   Float            @default(0)
   ratingCount Int              @default(0)
+  commissionBps Int? // negotiated override of the category default commission rate (basis points)
   isVerified  Boolean          @default(false)
   isOpen      Boolean          @default(true) // provider-controlled online/temporary-closure toggle
   isSeedData  Boolean          @default(false) // marks development seed rows for easy removal
@@ -506,6 +539,7 @@ model Provider {
   courierProfiles CourierProfile[]
   technicianProfiles TechnicianProfile[]
   payouts         ProviderPayout[]
+  earnings        ProviderEarning[]
   orders          Order[]
   serviceBookings ServiceBooking[]
   rentalReservations RentalReservation[]
@@ -1201,9 +1235,13 @@ model Order {
   deliveryFeeMinor Int    @default(0)
   serviceFeeMinor  Int    @default(0)
   taxMinor         Int    @default(0)
-  discountMinor    Int    @default(0)
+  discountMinor    Int    @default(0) // promo-code discount only; points discount is tracked separately
   tipMinor         Int    @default(0)
   totalMinor       Int    @default(0)
+  pointsRedeemed      Int @default(0)
+  pointsDiscountMinor Int @default(0)
+  pointsEarned        Int @default(0) // credited at delivery, recorded here for refund reversal
+  rewardFunding RewardFunding @default(VORYN_FUNDED)
   promoCodeId String?
   promoCode   PromoCode?  @relation(fields: [promoCodeId], references: [id], onDelete: SetNull)
   paymentId   String?     @unique
@@ -1449,6 +1487,45 @@ model ProviderPayout {
   createdAt   DateTime     @default(now())
 
   @@index([providerId])
+}
+
+// One row per settled transaction: the provider's share of a completed
+// order/booking/rental. PENDING until availableAt passes, then AVAILABLE for
+// payout. Reads flip status lazily; nothing here moves customer wallet money.
+model ProviderEarning {
+  id              String        @id @default(cuid())
+  providerId      String
+  provider        Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  referenceType   String // order | booking | rental
+  referenceId     String
+  code            String // human reference, e.g. VC-20481
+  grossMinor      Int // commission basis: what the provider is contractually entitled to
+  commissionBps   Int
+  commissionMinor Int
+  netMinor        Int
+  status          EarningStatus @default(PENDING)
+  availableAt     DateTime
+  paidAt          DateTime?
+  createdAt       DateTime      @default(now())
+
+  @@unique([referenceType, referenceId])
+  @@index([providerId, status, availableAt])
+}
+
+// Full money breakdown of a completed transaction (spec: never store only
+// order.total). One row per entry type; refunds and payouts recompute from
+// these instead of guessing.
+model SettlementRecord {
+  id            String              @id @default(cuid())
+  referenceType String // order | ride | booking | rental
+  referenceId   String
+  entryType     SettlementEntryType
+  amountMinor   Int
+  memo          String?
+  createdAt     DateTime            @default(now())
+
+  @@unique([referenceType, referenceId, entryType])
+  @@index([referenceType, referenceId])
 }
 
 model LoyaltyAccount {

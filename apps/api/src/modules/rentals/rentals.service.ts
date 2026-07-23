@@ -5,6 +5,7 @@ import { orderCode, pickupCode } from '../../lib/codes';
 import { percentOfMinor } from '../../lib/money';
 import { takePayment, refundPayment } from '../payments/payment.service';
 import { recordTrackingEvent } from '../tracking/tracking.service';
+import { settlementService } from '../settlement/settlement.service';
 
 export type RentalAddOn = { key: string; name: string; priceMinorPerDay: number };
 
@@ -15,7 +16,8 @@ export const RENTAL_ADD_ONS: RentalAddOn[] = [
   { key: 'extra_driver', name: 'Extra driver', priceMinorPerDay: 80000 },
 ];
 
-const RENTAL_SERVICE_FEE_MINOR = 30000; // JMD 300.00
+// Provider-funded commission model: no customer-facing rental service fee.
+const RENTAL_SERVICE_FEE_MINOR = 0;
 
 function rentalDays(pickupAt: Date, returnAt: Date): number {
   const ms = returnAt.getTime() - pickupAt.getTime();
@@ -225,6 +227,7 @@ export const rentalsService = {
       status: RentalStatus.COMPLETED,
       label: 'Vehicle returned successfully',
     });
+    await settlementService.settleRental(reservation.id);
     return completed;
   },
 

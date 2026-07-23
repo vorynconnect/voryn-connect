@@ -5,10 +5,12 @@ import Constants from 'expo-constants';
  *  1. EXPO_PUBLIC_API_URL — build-time override (e.g. an EAS build profile).
  *  2. The Expo host URI's LAN address — dev: simulators/devices on the same
  *     network reach the local API. Only present when served by Metro.
- *  3. expo.extra.apiUrl — the production URL baked into app.json. This is what
- *     store/standalone builds use (no Metro host to derive from). It sits after
- *     the host-URI check so it never hijacks local development.
- *  4. localhost — last-resort dev default.
+ *  3. Dev web: the page's own hostname (hostUri is not always exposed on web,
+ *     and extra.apiUrl is the PRODUCTION domain — it must never capture a dev
+ *     session, which breaks the moment the prod API and dev DB diverge).
+ *  4. expo.extra.apiUrl — the production URL baked into app.json. This is what
+ *     store/standalone builds use (no Metro host to derive from).
+ *  5. localhost — last-resort dev default.
  */
 function resolveApiUrl(): string {
   const fromEnv = process.env.EXPO_PUBLIC_API_URL;
@@ -17,6 +19,10 @@ function resolveApiUrl(): string {
   const hostUri = Constants.expoConfig?.hostUri;
   const host = hostUri?.split(':')[0];
   if (host) return `http://${host}:4100`;
+
+  if (__DEV__ && typeof window !== 'undefined' && window.location?.hostname) {
+    return `http://${window.location.hostname}:4100`;
+  }
 
   const fromExtra = Constants.expoConfig?.extra?.apiUrl as string | undefined;
   if (fromExtra) return fromExtra;

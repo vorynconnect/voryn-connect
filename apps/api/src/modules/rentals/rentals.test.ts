@@ -103,8 +103,9 @@ describe('rental quote', () => {
     expect(quote.days).toBe(2);
     expect(quote.rentalFeeMinor).toBe(1_300_000);
     expect(quote.protectionMinor).toBe(240_000);
-    expect(quote.serviceFeeMinor).toBe(30_000);
-    expect(quote.totalMinor).toBe(1_570_000);
+    // Provider-funded commission model: no customer-facing service fee.
+    expect(quote.serviceFeeMinor).toBe(0);
+    expect(quote.totalMinor).toBe(1_540_000);
   });
 
   it('rounds partial days up and never below one day', () => {
@@ -150,12 +151,12 @@ describe('reservation lifecycle', () => {
     reservationId = res.body.reservation.id;
     reservedReturnAt = res.body.reservation.returnAt;
     expect(res.body.reservation.status).toBe('CONFIRMED');
-    expect(res.body.reservation.totalMinor).toBe(1_570_000);
+    expect(res.body.reservation.totalMinor).toBe(1_540_000);
     expect(res.body.reservation.pickupCode).toMatch(/^\d{4}$/);
     expect(res.body.payment.status).toBe('CAPTURED');
 
     const after = await walletBalance(customerId);
-    expect(before - after).toBe(1_570_000); // debited exactly once
+    expect(before - after).toBe(1_540_000); // debited exactly once
   });
 
   it('rejects overlapping dates for the same vehicle', async () => {

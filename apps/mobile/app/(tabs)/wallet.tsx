@@ -87,7 +87,8 @@ export default function WalletScreen() {
             <Text style={styles.balanceValue}>{walletQuery.data ? formatJmd(walletQuery.data.wallet.balanceMinor) : '—'}</Text>
           )}
           <Text style={styles.pointsLabel}>
-            Rewards points: <Text style={styles.pointsValue}>{formatPoints(walletQuery.data?.loyalty.pointsBalance ?? 0)}</Text>
+            Voryn Points: <Text style={styles.pointsValue}>{formatPoints(walletQuery.data?.loyalty.pointsBalance ?? 0)}</Text>
+            {' '}· redeem at checkout
           </Text>
           <View style={styles.balanceActions}>
             {(
@@ -251,15 +252,17 @@ export default function WalletScreen() {
         <Text style={[styles.sectionTitle, { marginBottom: spacing.md }]}>Offers & rewards</Text>
         <Card style={styles.rewardCard}>
           <View style={styles.rewardBadge}>
-            <Text style={styles.rewardBadgeValue}>500</Text>
+            <Text style={styles.rewardBadgeValue}>
+              {(walletQuery.data?.loyalty.pointsBalance ?? 0).toLocaleString('en-JM')}
+            </Text>
             <Text style={styles.rewardBadgeLabel}>pts</Text>
           </View>
           <Text style={styles.rewardText}>
-            Use <Text style={styles.rewardStrong}>500 pts</Text> for <Text style={styles.rewardStrong}>JMD 250 off</Text> your
-            next order
+            <Text style={styles.rewardStrong}>1 point = JMD 1 off</Text> at checkout. Cover up to{' '}
+            <Text style={styles.rewardStrong}>20%</Text> of eligible orders.
           </Text>
           <Pressable style={styles.rewardCta} onPress={() => router.push('/wallet-actions/redeem')}>
-            <Text style={styles.rewardCtaText}>Redeem now</Text>
+            <Text style={styles.rewardCtaText}>How points work</Text>
             <Ionicons name="chevron-forward" size={14} color={colors.textOnBrand} />
           </Pressable>
         </Card>

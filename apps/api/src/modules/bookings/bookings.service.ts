@@ -6,8 +6,10 @@ import { percentOfMinor } from '../../lib/money';
 import { takePayment, refundPayment } from '../payments/payment.service';
 import { recordTrackingEvent } from '../tracking/tracking.service';
 import { notifyProviderStaff } from '../../lib/notify';
+import { settlementService } from '../settlement/settlement.service';
 
-const CONVENIENCE_FEE_MINOR = 15000; // JMD 150.00
+// Provider-funded commission model: no customer-facing convenience fee.
+const CONVENIENCE_FEE_MINOR = 0;
 const GCT_PERCENT = 15;
 
 const PREFIX: Record<ServiceVertical, string> = {
@@ -140,6 +142,9 @@ export const bookingsService = {
       data: { status },
     });
     await recordTrackingEvent({ subjectType: 'BOOKING', subjectId: bookingId, status, label });
+    if (status === BookingStatus.COMPLETED) {
+      await settlementService.settleBooking(bookingId);
+    }
     return booking;
   },
 
@@ -160,6 +165,7 @@ export const bookingsService = {
       status: BookingStatus.COMPLETED,
       label: 'Service completed',
     });
+    await settlementService.settleBooking(bookingId);
     return booking;
   },
 

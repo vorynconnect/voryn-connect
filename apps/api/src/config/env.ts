@@ -80,6 +80,16 @@ const envSchema = z.object({
   DRIVER_PRESENCE_DISPATCH_FRESH_SECONDS: z.coerce.number().int().positive().default(30),
   // Couriers with a fresh GPS fix only see deliveries whose pickup is this close.
   COURIER_DISPATCH_RADIUS_KM: z.coerce.number().positive().default(15),
+  // Money model: provider earnings clear from pending to available after this
+  // many days; the weekly payout run pays available balances.
+  EARNINGS_CLEAR_DAYS: z.coerce.number().int().min(0).default(2),
+  // Delivery-margin model: Voryn keeps a slice of the customer delivery fee and
+  // the courier is guaranteed the remainder plus 100% of tips.
+  DELIVERY_MARGIN_BPS: z.coerce.number().int().min(0).max(5000).default(2200),
+  DELIVERY_MARGIN_MIN_MINOR: z.coerce.number().int().min(0).default(5000),
+  DELIVERY_MARGIN_MAX_MINOR: z.coerce.number().int().min(0).default(20000),
+  // Ride drivers pay a percentage commission on the fare (never on tips).
+  RIDE_COMMISSION_BPS: z.coerce.number().int().min(0).max(5000).default(1200),
 });
 
 const parsed = envSchema.safeParse(process.env);

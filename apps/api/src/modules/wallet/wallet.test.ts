@@ -118,28 +118,25 @@ describe('withdrawal', () => {
 });
 
 describe('redeem points', () => {
-  it('converts points to wallet credit exactly once', async () => {
-    const body = { points: 500, idempotencyKey: `w-redeem-${stamp}` };
-    const res = await request(app).post('/v1/wallet/redeem-points').set(auth()).send(body).expect(201);
-    expect(res.body.transaction.amountMinor).toBe(25_000); // 500 pts → JMD 250
-    expect(res.body.pointsBalance).toBe(300);
-    expect(await balance(aliceId)).toBe(325_000);
-
-    const retry = await request(app).post('/v1/wallet/redeem-points').set(auth()).send(body).expect(201);
-    expect(retry.body.retried).toBe(true);
-    expect(await balance(aliceId)).toBe(325_000); // unchanged
-
-    const loyalty = await prisma.loyaltyAccount.findUniqueOrThrow({ where: { userId: aliceId } });
-    expect(loyalty.pointsBalance).toBe(300);
-  });
-
-  it('rejects redemption beyond the points balance', async () => {
+  it('never converts points to wallet cash (BOJ stored-value guardrail)', async () => {
+    const before = await balance(aliceId);
     const res = await request(app)
       .post('/v1/wallet/redeem-points')
       .set(auth())
-      .send({ points: 5000, idempotencyKey: `w-redeem-big-${stamp}` })
+      .send({ points: 500, idempotencyKey: `w-redeem-${stamp}` })
       .expect(400);
-    expect(res.body.error.code).toBe('INSUFFICIENT_POINTS');
+    expect(res.body.error.code).toBe('POINTS_NOT_CONVERTIBLE');
+    expect(await balance(aliceId)).toBe(before); // wallet untouched
+
+    const loyalty = await prisma.loyaltyAccount.findUniqueOrThrow({ where: { userId: aliceId } });
+    expect(loyalty.pointsBalance).toBe(800); // points untouched
+  });
+
+  it('reports the redemption terms on the wallet snapshot', async () => {
+    const res = await request(app).get('/v1/wallet').set(auth()).expect(200);
+    expect(res.body.loyalty.pointValueMinor).toBe(100); // 1 pt = JMD 1
+    expect(res.body.loyalty.maxRedeemPercent).toBe(20);
+    expect(res.body.loyalty.cashConvertible).toBe(false);
   });
 });
 

@@ -137,10 +137,11 @@ export default function DriverActiveTripScreen() {
       : vehicleKindForCourier(meQuery.data?.courier?.vehicleType);
   // Backend road-route ETA from this driver's live pings; no local guesswork.
   const etaDisplay = eta && !eta.stale ? String(eta.etaMinutes) : '—';
-  // Couriers keep the full delivery fee + tip (no platform cut); rides net roughly
-  // the fare minus the service fee, which isn't in this payload — approximate it.
+  // Delivery estimates already arrive as courier take-home (fee minus Voryn's
+  // margin, plus tip); ride estimates are the customer fare, so approximate the
+  // driver's cut as fare minus the 12% commission.
   const driverEarnings =
-    trip.earningsMinor ?? (trip.kind === 'delivery' ? trip.estimateMinor : Math.round(trip.estimateMinor * 0.85));
+    trip.earningsMinor ?? (trip.kind === 'delivery' ? trip.estimateMinor : Math.round(trip.estimateMinor * 0.88));
 
   return (
     <View style={styles.flex}>

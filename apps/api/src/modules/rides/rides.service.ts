@@ -7,16 +7,24 @@ import { haversineKm } from '../../lib/pricing';
 import { takePayment, refundPayment } from '../payments/payment.service';
 import { recordTrackingEvent } from '../tracking/tracking.service';
 import { walletService } from '../wallet/wallet.service';
+import { settlementService } from '../settlement/settlement.service';
+import { rideDriverEarningsMinor } from '../../lib/commission';
 import { assertValidCoordinate, type Coordinates } from '../maps/maps.provider';
 import { mapsService } from '../maps/maps.service';
 import { eligibleDrivers, maxSearchRadiusKm, pickupEtaByCategory } from './dispatch.service';
 
-/** Fare model (JMD minor units) per ride category. */
-const FARES: Record<RideCategory, { baseMinor: number; perKmMinor: number; serviceFeeMinor: number }> = {
-  ECONOMY: { baseMinor: 60000, perKmMinor: 3500, serviceFeeMinor: 7000 },
-  COMFORT: { baseMinor: 85000, perKmMinor: 5000, serviceFeeMinor: 9000 },
-  XL: { baseMinor: 120000, perKmMinor: 7500, serviceFeeMinor: 12000 },
-  MOTO: { baseMinor: 45000, perKmMinor: 2500, serviceFeeMinor: 5000 },
+/**
+ * Fare model (JMD minor units) per ride category. The quoted fare IS the
+ * charged fare — no fee is added at completion. Voryn's revenue is the
+ * driver-side commission (RIDE_COMMISSION_BPS), never a customer surcharge.
+ * Old per-category service fees were folded into the base so quotes did not
+ * drop below what riders were actually paying before.
+ */
+const FARES: Record<RideCategory, { baseMinor: number; perKmMinor: number }> = {
+  ECONOMY: { baseMinor: 67000, perKmMinor: 3500 },
+  COMFORT: { baseMinor: 94000, perKmMinor: 5000 },
+  XL: { baseMinor: 132000, perKmMinor: 7500 },
+  MOTO: { baseMinor: 50000, perKmMinor: 2500 },
 };
 
 export function estimateFareMinor(category: RideCategory, distanceKm: number): number {
@@ -266,7 +274,8 @@ export const ridesService = {
     const distanceFareMinor = Math.round(
       fare.perKmMinor * (trip.request.distanceKm ?? 1),
     );
-    const totalMinor = fare.baseMinor + distanceFareMinor + fare.serviceFeeMinor + tipMinor;
+    const fareMinor = fare.baseMinor + distanceFareMinor;
+    const totalMinor = fareMinor + tipMinor;
 
     const payment = await takePayment({
       userId: trip.request.customerId,
@@ -286,11 +295,34 @@ export const ridesService = {
         completedAt: new Date(),
         baseFareMinor: fare.baseMinor,
         distanceFareMinor,
-        serviceFeeMinor: fare.serviceFeeMinor,
+        serviceFeeMinor: 0,
         tipMinor,
         totalMinor,
         paymentId: payment.id,
       },
+    });
+
+    // Driver payout: fare minus Voryn's commission, tips passed through whole.
+    const payoutMinor = rideDriverEarningsMinor(fareMinor) + tipMinor;
+    await prisma.wallet.upsert({
+      where: { userId: trip.driver.user.id },
+      create: { userId: trip.driver.user.id },
+      update: {},
+    });
+    await walletService.credit({
+      userId: trip.driver.user.id,
+      amountMinor: payoutMinor,
+      type: WalletEntryType.PAYOUT,
+      description: `Trip payout • ${trip.code}`,
+      referenceType: 'ride',
+      referenceId: trip.id,
+      idempotencyKey: `driver-payout:ride:${trip.id}`,
+    });
+    await settlementService.settleRide({
+      tripId: trip.id,
+      code: trip.code,
+      fareMinor,
+      tipMinor,
     });
     await prisma.rideRequest.update({
       where: { id: trip.requestId },

@@ -1,16 +1,14 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import argon2 from 'argon2';
-import { PaymentProvider, PaymentStatus, Prisma, WalletEntryType } from '@prisma/client';
+import { PaymentProvider, PaymentStatus, WalletEntryType } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { AppError } from '../../lib/errors';
 import { requireAuth } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { walletService, withSerializableRetry } from './wallet.service';
+import { walletService } from './wallet.service';
 import { assertCardPaymentsAvailable } from '../payments/payment.service';
-
-/** Loyalty conversion approved in the wallet mockup: 500 pts = JMD 250 off. */
-const MINOR_PER_POINT = 50; // 1 pt = JMD 0.50
+import { MAX_REDEEM_PERCENT, POINT_VALUE_MINOR } from '../../lib/loyalty';
 
 export const walletRouter = Router();
 walletRouter.use(requireAuth);
@@ -27,7 +25,14 @@ walletRouter.get('/', async (req, res, next) => {
         status: wallet.status,
         hasPin: Boolean(wallet.pinHash),
       },
-      loyalty: { pointsBalance: loyalty?.pointsBalance ?? 0 },
+      loyalty: {
+        pointsBalance: loyalty?.pointsBalance ?? 0,
+        // 1 pt = JMD 1, redeemable at checkout for up to 20% of the eligible
+        // amount. Points are loyalty rewards, never cash.
+        pointValueMinor: POINT_VALUE_MINOR,
+        maxRedeemPercent: MAX_REDEEM_PERCENT,
+        cashConvertible: false,
+      },
     });
   } catch (err) {
     next(err);
@@ -181,75 +186,19 @@ walletRouter.post(
 );
 
 /**
- * Redeem loyalty points as wallet credit. Points are debited and the wallet
- * credited inside one transaction; the loyalty ledger row is created first so
- * a retried request (same idempotency key) can be detected via the wallet
- * entry's idempotency key.
+ * Points-to-cash conversion is not offered: freely convertible points would
+ * make the programme behave like stored monetary value (a regulated payment
+ * activity under BOJ rules). Points are redeemed at checkout as discounts.
+ * Old app builds that still call this get a clear explanation.
  */
-walletRouter.post(
-  '/redeem-points',
-  validate({
-    body: z.object({
-      points: z.number().int().min(100).max(1_000_000),
-      idempotencyKey: z.string().min(8).max(128),
-    }),
-  }),
-  async (req, res, next) => {
-    try {
-      const { points, idempotencyKey } = req.body;
-      const amountMinor = points * MINOR_PER_POINT;
-
-      const result = await withSerializableRetry(() => prisma.$transaction(
-        async (tx) => {
-          const existing = await tx.walletTransaction.findUnique({ where: { idempotencyKey } });
-          if (existing) return { transaction: existing, retried: true };
-
-          const account = await tx.loyaltyAccount.findUnique({ where: { userId: req.auth!.sub } });
-          if (!account) throw AppError.notFound('Loyalty account not found');
-          if (account.pointsBalance < points) {
-            throw AppError.badRequest('Not enough points to redeem.', 'INSUFFICIENT_POINTS');
-          }
-
-          const newPoints = account.pointsBalance - points;
-          await tx.loyaltyAccount.update({
-            where: { id: account.id },
-            data: { pointsBalance: newPoints },
-          });
-          await tx.loyaltyTransaction.create({
-            data: {
-              accountId: account.id,
-              type: 'REDEEM',
-              points: -points,
-              description: `Redeemed ${points} pts for wallet credit`,
-            },
-          });
-
-          const wallet = await tx.wallet.findUnique({ where: { userId: req.auth!.sub } });
-          if (!wallet || wallet.status !== 'ACTIVE') throw AppError.notFound('Wallet not found');
-          const newBalance = wallet.balanceMinor + amountMinor;
-          const entry = await tx.walletTransaction.create({
-            data: {
-              walletId: wallet.id,
-              type: WalletEntryType.PROMO_CREDIT,
-              status: 'COMPLETED',
-              amountMinor,
-              balanceAfterMinor: newBalance,
-              description: `Redeemed ${points} points`,
-              idempotencyKey,
-              completedAt: new Date(),
-            },
-          });
-          await tx.wallet.update({ where: { id: wallet.id }, data: { balanceMinor: newBalance } });
-          return { transaction: entry, pointsBalance: newPoints };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      ));
-      res.status(201).json(result);
-    } catch (err) {
-      next(err);
-    }
-  },
-);
+walletRouter.post('/redeem-points', (_req, _res, next) => {
+  next(
+    AppError.badRequest(
+      'Voryn Points are redeemed at checkout for discounts (up to 20% of an eligible order). They cannot be converted to wallet cash.',
+      'POINTS_NOT_CONVERTIBLE',
+    ),
+  );
+});
 
 // ── Wallet PIN ──────────────────────────────────────────────
 

@@ -6,6 +6,7 @@ import { AppError } from '../../lib/errors';
 import { requireAuth } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { ordersService } from './orders.service';
+import { deliverySplit } from '../../lib/commission';
 import { liveEta } from '../rides/eta.service';
 import { listTrackingEvents } from '../tracking/tracking.service';
 import { simulateOrderFulfillment } from '../simulation/fulfillment.simulator';
@@ -159,6 +160,7 @@ ordersRouter.post(
       addressId: z.string(),
       paymentMethodType: z.nativeEnum(PaymentMethodType),
       tipMinor: z.number().int().min(0).optional(),
+      pointsToRedeem: z.number().int().min(0).max(1_000_000).optional(),
       redeemPoints: z.boolean().optional(),
       idempotencyKey: z.string().min(8).max(128),
     }),
@@ -198,8 +200,9 @@ ordersRouter.get(
           etaMaxMinutes: quote.etaMaxMinutes,
           outOfZone: quote.outOfZone,
           maxDeliveryKm: quote.maxDeliveryKm,
-          // Transparency: the delivery person receives the full delivery fee plus tips.
-          courierPayMinor: quote.deliveryFeeMinor,
+          // Transparency: the delivery person's guaranteed share of the fee (plus 100% of tips).
+          courierPayMinor: deliverySplit(quote.deliveryFeeMinor).courierCompensationMinor,
+          points: quote.points,
         },
       });
     } catch (err) {

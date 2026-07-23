@@ -34,6 +34,8 @@ type OrderDetail = {
     serviceFeeMinor: number;
     taxMinor: number;
     discountMinor: number;
+    pointsRedeemed: number;
+    pointsDiscountMinor: number;
     tipMinor: number;
     totalMinor: number;
     distanceKm: number | null;
@@ -295,10 +297,12 @@ export default function OrderTrackingScreen() {
               </Text>
               <Text style={styles.feeValue}>{formatJmd(order.deliveryFeeMinor)}</Text>
             </View>
-            <View style={styles.feeRow}>
-              <Text style={styles.feeLabel}>Service Fee</Text>
-              <Text style={styles.feeValue}>{formatJmd(order.serviceFeeMinor)}</Text>
-            </View>
+            {order.serviceFeeMinor > 0 ? (
+              <View style={styles.feeRow}>
+                <Text style={styles.feeLabel}>Service Fee</Text>
+                <Text style={styles.feeValue}>{formatJmd(order.serviceFeeMinor)}</Text>
+              </View>
+            ) : null}
             <View style={styles.feeRow}>
               <Text style={styles.feeLabel}>Tax</Text>
               <Text style={styles.feeValue}>{formatJmd(order.taxMinor)}</Text>
@@ -307,6 +311,16 @@ export default function OrderTrackingScreen() {
               <View style={styles.feeRow}>
                 <Text style={[styles.feeLabel, { color: colors.success }]}>Discount</Text>
                 <Text style={[styles.feeValue, { color: colors.success }]}>−{formatJmd(order.discountMinor)}</Text>
+              </View>
+            ) : null}
+            {order.pointsDiscountMinor > 0 ? (
+              <View style={styles.feeRow}>
+                <Text style={[styles.feeLabel, { color: colors.success }]}>
+                  Points redeemed ({order.pointsRedeemed.toLocaleString()} pts)
+                </Text>
+                <Text style={[styles.feeValue, { color: colors.success }]}>
+                  −{formatJmd(order.pointsDiscountMinor)}
+                </Text>
               </View>
             ) : null}
             {order.tipMinor > 0 ? (

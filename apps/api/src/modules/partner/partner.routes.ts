@@ -934,44 +934,46 @@ partnerRouter.delete('/services/:id', async (req, res, next) => {
   }
 });
 
-// ── Earnings / payouts (read-only, backend computed) ─────────
+// ── Earnings / payouts (read from the ProviderEarning ledger) ─────────
+
+const EARNING_TYPE_LABEL: Record<string, string> = {
+  order: 'orders',
+  booking: 'bookings',
+  rental: 'rentals',
+};
+
+/** Pending earnings clear to available once their clearance date passes. */
+async function flipClearedEarnings(providerId: string) {
+  await prisma.providerEarning.updateMany({
+    where: { providerId, status: 'PENDING', availableAt: { lte: new Date() } },
+    data: { status: 'AVAILABLE' },
+  });
+}
 
 partnerRouter.get('/earnings', async (req, res, next) => {
   try {
     const providerId = req.partner!.providerId;
-    const [orders, bookings, rentals] = await Promise.all([
-      prisma.order.findMany({
-        where: { providerId, status: { in: [OrderStatus.COMPLETED, OrderStatus.DELIVERED] } },
-        select: { id: true, code: true, totalMinor: true, serviceFeeMinor: true, updatedAt: true },
-      }),
-      prisma.serviceBooking.findMany({
-        where: { providerId, status: BookingStatus.COMPLETED },
-        select: { id: true, code: true, totalMinor: true, convenienceFeeMinor: true, updatedAt: true },
-      }),
-      prisma.rentalReservation.findMany({
-        where: { providerId, status: 'COMPLETED' },
-        select: { id: true, code: true, totalMinor: true, serviceFeeMinor: true, updatedAt: true },
-      }),
-    ]);
+    await flipClearedEarnings(providerId);
+    const rows = await prisma.providerEarning.findMany({
+      where: { providerId, status: { not: 'REVERSED' } },
+      orderBy: { createdAt: 'desc' },
+    });
 
-    type Row = { id: string; type: string; reference: string; grossMinor: number; commissionMinor: number; when: Date };
-    const rows: Row[] = [
-      ...orders.map((o) => ({ id: o.id, type: 'orders', reference: o.code, grossMinor: o.totalMinor, commissionMinor: o.serviceFeeMinor, when: o.updatedAt })),
-      ...bookings.map((b) => ({ id: b.id, type: 'bookings', reference: b.code, grossMinor: b.totalMinor, commissionMinor: b.convenienceFeeMinor, when: b.updatedAt })),
-      ...rentals.map((r) => ({ id: r.id, type: 'rentals', reference: r.code, grossMinor: r.totalMinor, commissionMinor: r.serviceFeeMinor, when: r.updatedAt })),
-    ].sort((a, b) => b.when.getTime() - a.when.getTime());
-
-    const net = (r: Row) => r.grossMinor - r.commissionMinor;
-    const sumNet = (list: Row[]) => list.reduce((s, r) => s + net(r), 0);
+    const sumNet = (list: typeof rows) => list.reduce((s, r) => s + r.netMinor, 0);
     const startOfDay = new Date(new Date().toDateString());
     const weekAgo = new Date(Date.now() - 7 * 86_400_000);
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 
     const grossMinor = rows.reduce((s, r) => s + r.grossMinor, 0);
     const commissionMinor = rows.reduce((s, r) => s + r.commissionMinor, 0);
+    const pendingMinor = sumNet(rows.filter((r) => r.status === 'PENDING'));
+    const availableMinor = sumNet(rows.filter((r) => r.status === 'AVAILABLE'));
 
     const byType = new Map<string, number>();
-    for (const r of rows) byType.set(r.type, (byType.get(r.type) ?? 0) + net(r));
+    for (const r of rows) {
+      const label = EARNING_TYPE_LABEL[r.referenceType] ?? r.referenceType;
+      byType.set(label, (byType.get(label) ?? 0) + r.netMinor);
+    }
 
     const series: { label: string; value: number }[] = [];
     for (let i = 7; i >= 0; i -= 1) {
@@ -979,18 +981,21 @@ partnerRouter.get('/earnings', async (req, res, next) => {
       const end = new Date(Date.now() - i * 7 * 86_400_000);
       series.push({
         label: end.toLocaleDateString('en-JM', { month: 'short', day: 'numeric' }),
-        value: toMajor(sumNet(rows.filter((r) => r.when >= start && r.when < end))),
+        value: toMajor(sumNet(rows.filter((r) => r.createdAt >= start && r.createdAt < end))),
       });
     }
 
     sendData(res, {
       summary: {
-        today: toMajor(sumNet(rows.filter((r) => r.when >= startOfDay))),
-        thisWeek: toMajor(sumNet(rows.filter((r) => r.when >= weekAgo))),
-        thisMonth: toMajor(sumNet(rows.filter((r) => r.when >= monthStart))),
-        total: toMajor(grossMinor - commissionMinor),
+        today: toMajor(sumNet(rows.filter((r) => r.createdAt >= startOfDay))),
+        thisWeek: toMajor(sumNet(rows.filter((r) => r.createdAt >= weekAgo))),
+        thisMonth: toMajor(sumNet(rows.filter((r) => r.createdAt >= monthStart))),
+        total: toMajor(sumNet(rows)),
         gross: toMajor(grossMinor),
         commission: toMajor(commissionMinor),
+        commissionRate: rows[0] ? rows[0].commissionBps / 100 : null,
+        pending: toMajor(pendingMinor),
+        available: toMajor(availableMinor),
         avgOrderValue: rows.length ? toMajor(Math.round(grossMinor / rows.length)) : 0,
         count: rows.length,
       },
@@ -998,13 +1003,15 @@ partnerRouter.get('/earnings', async (req, res, next) => {
       series,
       history: rows.slice(0, 20).map((r) => ({
         id: r.id,
-        type: r.type,
-        reference: r.reference,
+        type: EARNING_TYPE_LABEL[r.referenceType] ?? r.referenceType,
+        reference: r.code,
         gross: toMajor(r.grossMinor),
         commission: toMajor(r.commissionMinor),
-        net: toMajor(net(r)),
-        status: 'COMPLETED',
-        createdAt: r.when,
+        rate: r.commissionBps / 100,
+        net: toMajor(r.netMinor),
+        status: r.status,
+        availableAt: r.availableAt,
+        createdAt: r.createdAt,
       })),
     });
   } catch (err) {
@@ -1021,29 +1028,26 @@ partnerRouter.get('/payouts', async (req, res, next) => {
       .filter((p) => p.status === 'REQUESTED' || p.status === 'PROCESSING')
       .reduce((s, p) => s + p.amountMinor, 0);
 
-    // Available = lifetime net earnings − already paid/pending payouts.
-    const [orders, bookings, rentals] = await Promise.all([
-      prisma.order.aggregate({
-        where: { providerId, status: { in: [OrderStatus.COMPLETED, OrderStatus.DELIVERED] } },
-        _sum: { totalMinor: true, serviceFeeMinor: true },
+    // Wallet sections stay separate: available (cleared, minus payouts already
+    // made or in flight) vs pending (still inside the clearance window).
+    await flipClearedEarnings(providerId);
+    const [availableAgg, pendingAgg] = await Promise.all([
+      prisma.providerEarning.aggregate({
+        where: { providerId, status: 'AVAILABLE' },
+        _sum: { netMinor: true },
       }),
-      prisma.serviceBooking.aggregate({
-        where: { providerId, status: BookingStatus.COMPLETED },
-        _sum: { totalMinor: true, convenienceFeeMinor: true },
-      }),
-      prisma.rentalReservation.aggregate({
-        where: { providerId, status: 'COMPLETED' },
-        _sum: { totalMinor: true, serviceFeeMinor: true },
+      prisma.providerEarning.aggregate({
+        where: { providerId, status: 'PENDING' },
+        _sum: { netMinor: true },
       }),
     ]);
-    const netMinor =
-      (orders._sum.totalMinor ?? 0) - (orders._sum.serviceFeeMinor ?? 0) +
-      (bookings._sum.totalMinor ?? 0) - (bookings._sum.convenienceFeeMinor ?? 0) +
-      (rentals._sum.totalMinor ?? 0) - (rentals._sum.serviceFeeMinor ?? 0);
+    const availableNetMinor = availableAgg._sum.netMinor ?? 0;
+    const pendingEarningsMinor = pendingAgg._sum.netMinor ?? 0;
 
     const lastPaid = payouts.find((p) => p.status === 'PAID');
     sendData(res, {
-      available: toMajor(Math.max(0, netMinor - paidMinor - pendingMinor)),
+      available: toMajor(Math.max(0, availableNetMinor - paidMinor - pendingMinor)),
+      pendingEarnings: toMajor(pendingEarningsMinor),
       pending: toMajor(pendingMinor),
       paid: toMajor(paidMinor),
       last: toMajor(lastPaid?.amountMinor ?? 0),

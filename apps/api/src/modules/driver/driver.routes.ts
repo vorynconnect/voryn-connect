@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { OrderStatus, RideStatus, WalletEntryType } from '@prisma/client';
+import { OrderStatus, RideStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { AppError } from '../../lib/errors';
 import { GEOFENCE, checkGeofence, detectSpeedAnomaly } from '../../lib/geofence';
@@ -12,35 +12,36 @@ import { haversineKm } from '../../lib/pricing';
 import { env } from '../../config/env';
 import { ridesService } from '../rides/rides.service';
 import { ordersService } from '../orders/orders.service';
-import { walletService } from '../wallet/wallet.service';
+import { deliverySplit, rideDriverEarningsMinor } from '../../lib/commission';
 import { requireDriver } from './driver.middleware';
 
 export const driverRouter = Router();
 driverRouter.use(requireDriver);
 
 /**
- * Payout policy: the platform keeps the service fee; everything else on the
- * fare goes to the driver. Couriers earn the delivery fee plus tip. Credits
- * land on the driver's wallet ledger with an idempotency key per trip, so a
- * retried completion can never double-pay.
+ * Payout policy: drivers earn the fare minus Voryn's ride commission; couriers
+ * earn the delivery fee minus Voryn's delivery margin. Tips pass through 100%.
+ * Payouts are credited inside completeTrip / order settlement with an
+ * idempotency key per trip, so a retried completion can never double-pay.
  */
 async function ensureWallet(userId: string) {
   await prisma.wallet.upsert({ where: { userId }, create: { userId }, update: {} });
   await prisma.loyaltyAccount.upsert({ where: { userId }, create: { userId }, update: {} });
 }
 
-async function creditPayout(userId: string, amountMinor: number, code: string, kind: 'ride' | 'delivery', refId: string) {
-  if (amountMinor <= 0) return;
-  await ensureWallet(userId);
-  await walletService.credit({
-    userId,
-    amountMinor,
-    type: WalletEntryType.PAYOUT,
-    description: `Trip payout • ${code}`,
-    referenceType: kind,
-    referenceId: refId,
-    idempotencyKey: `driver-payout:${kind}:${refId}`,
-  });
+/**
+ * Earnings as shown to the driver/courier. Era-aware: rows settled under the
+ * old flat-fee model (serviceFeeMinor > 0) paid the full fee; current rows use
+ * the commission/delivery-margin model. Tips are always passed through whole.
+ */
+function rideEarnedMinor(t: { totalMinor: number; serviceFeeMinor: number; tipMinor: number }) {
+  if (t.serviceFeeMinor > 0) return t.totalMinor - t.serviceFeeMinor;
+  return rideDriverEarningsMinor(t.totalMinor - t.tipMinor) + t.tipMinor;
+}
+
+function courierEarnedMinor(o: { deliveryFeeMinor: number; tipMinor: number; serviceFeeMinor: number }) {
+  if (o.serviceFeeMinor > 0) return o.deliveryFeeMinor + o.tipMinor;
+  return deliverySplit(o.deliveryFeeMinor).courierCompensationMinor + o.tipMinor;
 }
 
 const startOfToday = () => new Date(new Date().toDateString());
@@ -57,7 +58,7 @@ async function earningRows(ctx: { driverId?: string; courierId?: string }) {
     ctx.courierId
       ? prisma.order.findMany({
           where: { courierId: ctx.courierId, status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] } },
-          select: { id: true, code: true, deliveryFeeMinor: true, tipMinor: true, deliveredAt: true, updatedAt: true },
+          select: { id: true, code: true, deliveryFeeMinor: true, serviceFeeMinor: true, tipMinor: true, deliveredAt: true, updatedAt: true },
         })
       : [],
   ]);
@@ -65,14 +66,14 @@ async function earningRows(ctx: { driverId?: string; courierId?: string }) {
     ...trips.map((t) => ({
       kind: 'ride' as const,
       code: t.code,
-      earnedMinor: t.totalMinor - t.serviceFeeMinor,
+      earnedMinor: rideEarnedMinor(t),
       tipMinor: t.tipMinor,
       when: t.completedAt ?? t.updatedAt,
     })),
     ...orders.map((o) => ({
       kind: 'delivery' as const,
       code: o.code,
-      earnedMinor: o.deliveryFeeMinor + o.tipMinor,
+      earnedMinor: courierEarnedMinor(o),
       tipMinor: o.tipMinor,
       when: o.deliveredAt ?? o.updatedAt,
     })),
@@ -302,7 +303,7 @@ driverRouter.get('/requests', async (req, res, next) => {
           dropoffLat: o.deliveryLat,
           dropoffLng: o.deliveryLng,
           distanceKm: o.distanceKm,
-          estimateMinor: o.deliveryFeeMinor + o.tipMinor,
+          estimateMinor: courierEarnedMinor(o),
           itemsSummary: o.items.map((i) => `${i.quantity}× ${i.name}`).join(', '),
           createdAt: o.createdAt,
         })),
@@ -449,6 +450,7 @@ function rideView(t: {
   pickupCode?: string;
   totalMinor: number;
   serviceFeeMinor: number;
+  tipMinor: number;
   createdAt: Date;
   completedAt: Date | null;
   request: {
@@ -480,7 +482,7 @@ function rideView(t: {
     dropoffLng: t.request.dropoffLng,
     distanceKm: t.request.distanceKm,
     estimateMinor: t.request.estimateMinor,
-    earningsMinor: t.status === RideStatus.COMPLETED ? t.totalMinor - t.serviceFeeMinor : null,
+    earningsMinor: t.status === RideStatus.COMPLETED ? rideEarnedMinor(t) : null,
     paymentLabel: t.request.paymentMethodType === 'VORYN_WALLET' ? 'Wallet' : t.request.paymentMethodType === 'CARD' ? 'Card' : 'Cash',
     pickupCode: t.pickupCode,
     when: t.completedAt ?? t.createdAt,
@@ -496,6 +498,7 @@ function deliveryView(o: {
   deliveryLng: number | null;
   distanceKm: number | null;
   deliveryFeeMinor: number;
+  serviceFeeMinor: number;
   tipMinor: number;
   createdAt: Date;
   deliveredAt: Date | null;
@@ -518,10 +521,10 @@ function deliveryView(o: {
     dropoffLat: o.deliveryLat,
     dropoffLng: o.deliveryLng,
     distanceKm: o.distanceKm,
-    estimateMinor: o.deliveryFeeMinor + o.tipMinor,
+    estimateMinor: courierEarnedMinor(o),
     earningsMinor:
       o.status === OrderStatus.DELIVERED || o.status === OrderStatus.COMPLETED
-        ? o.deliveryFeeMinor + o.tipMinor
+        ? courierEarnedMinor(o)
         : null,
     paymentLabel: 'Delivery fee',
     itemsSummary: (o.items ?? []).map((i) => `${i.quantity}× ${i.name}`).join(', '),
@@ -720,14 +723,8 @@ driverRouter.post(
             override,
             stepLabel: 'Drop-off',
           });
-          const completed = await ridesService.completeTrip(trip.id);
-          await creditPayout(
-            req.auth!.sub,
-            completed.totalMinor - completed.serviceFeeMinor,
-            completed.code,
-            'ride',
-            completed.id,
-          );
+          // completeTrip charges the rider and pays the driver (fare minus commission).
+          await ridesService.completeTrip(trip.id);
           await prisma.notification.create({
             data: {
               userId: trip.request.customerId,
@@ -795,9 +792,10 @@ driverRouter.post(
           stepLabel: 'Delivery',
         });
       }
+      // On DELIVERED the transition settles the order: merchant earning,
+      // courier payout (fee minus margin, plus tip), points, ledger records.
       await ordersService.transition(order.id, step.next, step.label, { by: 'driver-dashboard' });
       if (step.next === OrderStatus.DELIVERED) {
-        await creditPayout(req.auth!.sub, order.deliveryFeeMinor + order.tipMinor, order.code, 'delivery', order.id);
         await prisma.notification.create({
           data: {
             userId: order.customerId,

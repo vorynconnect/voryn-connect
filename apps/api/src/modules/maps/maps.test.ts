@@ -223,7 +223,7 @@ describe('ride quotes', () => {
     expect(res.body.distanceKm).toBe(6.4); // provider road distance, not straight-line
     expect(res.body.route.length).toBeGreaterThanOrEqual(3);
     const economy = res.body.categories.find((c: { category: string }) => c.category === 'ECONOMY');
-    expect(economy.estimateMinor).toBe(82400); // 600 base + 35/km × 6.4 km (JMD minor)
+    expect(economy.estimateMinor).toBe(89400); // 670 base + 35/km × 6.4 km (JMD minor)
   });
 
   it('books with the quoted fare and burns the quote', async () => {
@@ -241,7 +241,7 @@ describe('ride quotes', () => {
         quoteId: quote.quoteId,
       })
       .expect(201);
-    expect(booking.body.request.estimateMinor).toBe(82400);
+    expect(booking.body.request.estimateMinor).toBe(89400);
     expect(booking.body.request.distanceKm).toBe(6.4);
     expect(booking.body.request.quoteId).toBe(quote.quoteId);
 

@@ -114,6 +114,22 @@ services:
       # ── Marketplace tuning (defaults exist; pinned here for visibility) ──
       - key: DELIVERY_MAX_KM
         value: "15"
+      # ── Money model: provider-funded commission + delivery margin ──
+      # Per-category commission rates live in src/lib/commission.ts; these are
+      # the platform-wide knobs. Days before a provider's earnings clear:
+      - key: EARNINGS_CLEAR_DAYS
+        value: "2"
+      # Voryn's share of the delivery fee (2200 = 22%), clamped by min/max.
+      # The courier keeps the remainder plus 100% of tips.
+      - key: DELIVERY_MARGIN_BPS
+        value: "2200"
+      - key: DELIVERY_MARGIN_MIN_MINOR
+        value: "5000"
+      - key: DELIVERY_MARGIN_MAX_MINOR
+        value: "20000"
+      # Commission on a ride fare (1200 = 12%). Never applied to tips.
+      - key: RIDE_COMMISSION_BPS
+        value: "1200"
       # Per-instance DB pool cap: instances × limit must stay under the
       # Postgres plan's connection budget (basic-256mb allows ~100).
       - key: DB_CONNECTION_LIMIT

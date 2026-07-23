@@ -30,13 +30,12 @@ type CartData = {
     items: CartItem[];
     promoCode: { code: string; type: string; value: number } | null;
     deliveryFeeMinor: number | null;
+    serviceFeeMinor: number | null;
     distanceKm: number | null;
   } | null;
 };
 
 const FALLBACK_DELIVERY_FEE_MINOR = 20000;
-
-const SERVICE_FEE_MINOR = 15000;
 const TAX_PERCENT = 10;
 
 export default function CartScreen() {
@@ -105,6 +104,7 @@ export default function CartScreen() {
   const subtotalMinor = items.reduce((sum, i) => sum + i.unitPriceMinor * i.quantity, 0);
   // Real provider fee from the cart API; fall back only if it's somehow missing.
   const deliveryFeeMinor = cart.deliveryFeeMinor ?? FALLBACK_DELIVERY_FEE_MINOR;
+  const serviceFeeMinor = cart.serviceFeeMinor ?? 0;
   const taxMinor = Math.round((subtotalMinor * TAX_PERCENT) / 100);
   let discountMinor = 0;
   if (cart.promoCode) {
@@ -112,7 +112,7 @@ export default function CartScreen() {
     else if (cart.promoCode.type === 'AMOUNT_OFF') discountMinor = cart.promoCode.value;
     else if (cart.promoCode.type === 'FREE_DELIVERY') discountMinor = deliveryFeeMinor;
   }
-  const totalMinor = Math.max(0, subtotalMinor + deliveryFeeMinor + SERVICE_FEE_MINOR + taxMinor - discountMinor);
+  const totalMinor = Math.max(0, subtotalMinor + deliveryFeeMinor + serviceFeeMinor + taxMinor - discountMinor);
 
   return (
     <View style={styles.flex}>
@@ -208,10 +208,12 @@ export default function CartScreen() {
             </Text>
             <Text style={styles.summaryValue}>{formatJmd(deliveryFeeMinor)}</Text>
           </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Service fee</Text>
-            <Text style={styles.summaryValue}>{formatJmd(SERVICE_FEE_MINOR)}</Text>
-          </View>
+          {serviceFeeMinor > 0 ? (
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Service fee</Text>
+              <Text style={styles.summaryValue}>{formatJmd(serviceFeeMinor)}</Text>
+            </View>
+          ) : null}
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Estimated taxes</Text>
             <Text style={styles.summaryValue}>{formatJmd(taxMinor)}</Text>

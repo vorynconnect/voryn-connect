@@ -32,13 +32,12 @@ type DeliveryQuote = {
     outOfZone: boolean;
     maxDeliveryKm: number;
     courierPayMinor: number;
+    points: { balance: number; maxRedeemable: number; valueMinor: number; maxPercent: number };
   };
 };
 
 const OUT_OF_ZONE_MESSAGE =
   'This location is currently outside the delivery area. Choose pickup or another address.';
-
-const POINTS_DISCOUNT_MINOR = 25000; // 500 pts = JMD 250 off, mirrors the server
 
 export default function CheckoutScreen() {
   const router = useRouter();
@@ -84,10 +83,13 @@ export default function CheckoutScreen() {
     );
   }
 
-  const points = walletQuery.data?.loyalty.pointsBalance ?? 0;
   const walletBalance = walletQuery.data?.wallet.balanceMinor ?? 0;
   const quote = quoteQuery.data?.quote;
-  const pointsDiscountMinor = redeemPoints && points >= 500 ? POINTS_DISCOUNT_MINOR : 0;
+  // Server-computed cap: 1 pt = JMD 1, up to 20% of the eligible item amount.
+  const points = quote?.points.balance ?? walletQuery.data?.loyalty.pointsBalance ?? 0;
+  const redeemablePoints = quote?.points.maxRedeemable ?? 0;
+  const pointsDiscountMinor =
+    redeemPoints && quote ? redeemablePoints * quote.points.valueMinor : 0;
   const totalMinor = quote ? Math.max(0, quote.totalBeforeTipMinor - pointsDiscountMinor) + tipMinor : null;
 
   const placeOrder = async () => {
@@ -112,7 +114,7 @@ export default function CheckoutScreen() {
           addressId: selectedAddress.id,
           paymentMethodType: payment,
           tipMinor,
-          redeemPoints,
+          pointsToRedeem: redeemPoints ? redeemablePoints : 0,
           idempotencyKey,
         },
       });
@@ -244,13 +246,15 @@ export default function CheckoutScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.paymentTitle}>Redeem points</Text>
               <Text style={styles.paymentBody}>
-                You have {points.toLocaleString()} points {points >= 500 ? '(500 pts = JMD 250 off)' : ''}
+                {redeemablePoints > 0
+                  ? `You have ${points.toLocaleString()} points. Save ${formatJmd(redeemablePoints * (quote?.points.valueMinor ?? 100))} on this order.`
+                  : `You have ${points.toLocaleString()} points. Redeem up to ${quote?.points.maxPercent ?? 20}% of eligible orders.`}
               </Text>
             </View>
             <Switch
               value={redeemPoints}
               onValueChange={setRedeemPoints}
-              disabled={points < 500}
+              disabled={redeemablePoints <= 0}
               trackColor={{ true: colors.blue, false: colors.border }}
             />
           </View>
@@ -294,10 +298,12 @@ export default function CheckoutScreen() {
                 </Text>
                 <Text style={styles.summaryValue}>{formatJmd(quote.deliveryFeeMinor)}</Text>
               </View>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Service fee</Text>
-                <Text style={styles.summaryValue}>{formatJmd(quote.serviceFeeMinor)}</Text>
-              </View>
+              {quote.serviceFeeMinor > 0 ? (
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Service fee</Text>
+                  <Text style={styles.summaryValue}>{formatJmd(quote.serviceFeeMinor)}</Text>
+                </View>
+              ) : null}
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>Estimated taxes</Text>
                 <Text style={styles.summaryValue}>{formatJmd(quote.taxMinor)}</Text>
